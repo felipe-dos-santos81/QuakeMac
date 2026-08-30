@@ -30,6 +30,24 @@ void GL_MakeAliasModelDisplayLists (model_t *m, aliashdr_t *hdr);
 model_t	*loadmodel;
 char	loadname[32];	// for hunk tags
 
+/*
+=============
+Mod_ExternalTexturePath
+
+Builds the override path from the full model name, extension kept
+(collisions stay impossible because engine identifiers already
+differ by extension): "progs/s_light.mdl" + "0" ->
+"progs/s_light.mdl_0.tga"
+=============
+*/
+static void Mod_ExternalTexturePath (char *out, char *suffix)
+{
+	strcpy (out, loadmodel->name);
+	strcat (out, "_");
+	strcat (out, suffix);
+	strcat (out, ".tga");
+}
+
 void Mod_LoadSpriteModel (model_t *mod, void *buffer);
 void Mod_LoadBrushModel (model_t *mod, void *buffer);
 void Mod_LoadAliasModel (model_t *mod, void *buffer);
@@ -390,9 +408,15 @@ void Mod_LoadTextures (lump_t *l)
 			R_InitSky (tx);
 		else
 		{
-			texture_mode = GL_LINEAR_MIPMAP_NEAREST; //_LINEAR;
-			tx->gl_texturenum = GL_LoadTexture (mt->name, tx->width, tx->height, (byte *)(tx+1), true, false);
-			texture_mode = GL_LINEAR;
+			tx->gl_texturenum = GL_TryLoadExternalTexture (mt->name,
+				va ("textures/%s.tga", mt->name),
+				tx->width, tx->height, false, true, false);
+			if (!tx->gl_texturenum)
+			{
+				texture_mode = GL_LINEAR_MIPMAP_NEAREST; //_LINEAR;
+				tx->gl_texturenum = GL_LoadTexture (mt->name, tx->width, tx->height, (byte *)(tx+1), true, false);
+				texture_mode = GL_LINEAR;
+			}
 		}
 	}
 
@@ -1415,6 +1439,8 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 {
 	int		i, j, k;
 	char	name[32];
+	char	path[MAX_QPATH + 16];
+	char	suffix[16];
 	int		s;
 	byte	*copy;
 	byte	*skin;
@@ -1442,12 +1468,31 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 				memcpy (texels, (byte *)(pskintype + 1), s);
 	//		}
 			sprintf (name, "%s_%i", loadmodel->name, i);
-			pheader->gl_texturenum[i][0] =
-			pheader->gl_texturenum[i][1] =
-			pheader->gl_texturenum[i][2] =
-			pheader->gl_texturenum[i][3] =
-				GL_LoadTexture (name, pheader->skinwidth, 
-				pheader->skinheight, (byte *)(pskintype + 1), true, false);
+			pheader->gl_texturenum[i][0] = 0;
+			if (strcmp (loadmodel->name, "progs/player.mdl"))
+			{	// player skin is rebuilt at runtime for color translation
+				sprintf (suffix, "%i", i);
+				Mod_ExternalTexturePath (path, suffix);
+				pheader->gl_texturenum[i][0] = GL_TryLoadExternalTexture (
+					name, path, pheader->skinwidth, pheader->skinheight,
+					false, true, false);
+			}
+			if (!pheader->gl_texturenum[i][0])
+			{
+				pheader->gl_texturenum[i][0] =
+				pheader->gl_texturenum[i][1] =
+				pheader->gl_texturenum[i][2] =
+				pheader->gl_texturenum[i][3] =
+					GL_LoadTexture (name, pheader->skinwidth, 
+					pheader->skinheight, (byte *)(pskintype + 1), true, false);
+			}
+			else
+			{
+				pheader->gl_texturenum[i][1] =
+				pheader->gl_texturenum[i][2] =
+				pheader->gl_texturenum[i][3] =
+					pheader->gl_texturenum[i][0];
+			}
 			pskintype = (daliasskintype_t *)((byte *)(pskintype+1) + s);
 		} else {
 			// animating skin group.  yuck.
@@ -1467,9 +1512,15 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 						memcpy (texels, (byte *)(pskintype), s);
 					}
 					sprintf (name, "%s_%i_%i", loadmodel->name, i,j);
-					pheader->gl_texturenum[i][j&3] = 
-						GL_LoadTexture (name, pheader->skinwidth, 
-						pheader->skinheight, (byte *)(pskintype), true, false);
+					sprintf (suffix, "%i_%i", i, j);
+					Mod_ExternalTexturePath (path, suffix);
+					pheader->gl_texturenum[i][j&3] = GL_TryLoadExternalTexture (
+						name, path, pheader->skinwidth, pheader->skinheight,
+						false, true, false);
+					if (!pheader->gl_texturenum[i][j&3])
+						pheader->gl_texturenum[i][j&3] = 
+							GL_LoadTexture (name, pheader->skinwidth, 
+							pheader->skinheight, (byte *)(pskintype), true, false);
 					pskintype = (daliasskintype_t *)((byte *)(pskintype) + s);
 			}
 			k = j;
@@ -1663,6 +1714,8 @@ void * Mod_LoadSpriteFrame (void * pin, mspriteframe_t **ppframe, int framenum)
 	unsigned short		*ppixout;
 	byte				*ppixin;
 	char				name[64];
+	char				path[MAX_QPATH + 16];
+	char				suffix[16];
 
 	pinframe = (dspriteframe_t *)pin;
 
@@ -1687,7 +1740,12 @@ void * Mod_LoadSpriteFrame (void * pin, mspriteframe_t **ppframe, int framenum)
 	pspriteframe->right = width + origin[0];
 
 	sprintf (name, "%s_%i", loadmodel->name, framenum);
-	pspriteframe->gl_texturenum = GL_LoadTexture (name, width, height, (byte *)(pinframe + 1), true, true);
+	sprintf (suffix, "%i", framenum);
+	Mod_ExternalTexturePath (path, suffix);
+	pspriteframe->gl_texturenum = GL_TryLoadExternalTexture (name, path,
+		width, height, false, true, true);
+	if (!pspriteframe->gl_texturenum)
+		pspriteframe->gl_texturenum = GL_LoadTexture (name, width, height, (byte *)(pinframe + 1), true, true);
 
 	return (void *)((byte *)pinframe + sizeof (dspriteframe_t) + size);
 }

@@ -38,6 +38,10 @@ extern	float	gldepthmin, gldepthmax;
 void GL_Upload32 (unsigned *data, int width, int height,  qboolean mipmap, qboolean alpha);
 void GL_Upload8 (byte *data, int width, int height,  qboolean mipmap, qboolean alpha);
 int GL_LoadTexture (char *identifier, int width, int height, byte *data, qboolean mipmap, qboolean alpha);
+extern cvar_t gl_externaltextures;
+int GL_TryLoadExternalTexture (char *identifier, char *path,
+	int orig_w, int orig_h, qboolean exact_size,
+	qboolean mipmap, qboolean alpha);
 int GL_FindTexture (char *identifier);
 
 typedef struct
