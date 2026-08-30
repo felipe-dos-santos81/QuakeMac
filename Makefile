@@ -176,7 +176,7 @@ QW_CLIENT_OBJS = \
 
 .PHONY: help objects build-release build-debug build-server \
 	build-server-debug build-client check-data check-data-quake \
-	check-data-qw run run-server run-client clean
+	check-data-qw run run-server run-client export-textures clean
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
@@ -353,6 +353,11 @@ run-server: check-data-qw build-server ## Launch qwsv against $(GAMEDIR)/qw
 
 run-client: check-data-qw build-client ## Launch glqwcl against $(GAMEDIR)/qw
 	$(QW_BUILDDIR)/glqwcl -basedir "$(GAMEDIR)" +gamedir qw
+
+# ── Tools ────────────────────────────────────────────────────────────────────
+
+export-textures: ## Extract game textures from $(GAMEDIR)/id1 to tools/extracted/
+	python3 tools/extract.py "$(GAMEDIR)/id1"
 
 clean: ## Remove build output
 	rm -rf $(QUAKE_BUILDDIR) $(QW_BUILDDIR)
