@@ -1361,15 +1361,20 @@ int GL_TryLoadExternalTexture (char *identifier, char *path,
 	bpp = buf[16];
 	if ((bpp != 24 && bpp != 32) || w < 1 || h < 1)
 		goto reject;
-	if (len != 18 + w * h * (bpp / 8))
-		goto reject;
 
-	/* GL_Upload32 Sys_Errors past static upload buffer; clamping (picmip/gl_max_size) only shrinks, so pre-clamp product check keeps path unreachable file content. */
-	if ((unsigned)w * (unsigned)h > 1024*512)
+	/* GL_Upload32 rounds up power of two and Sys_Errors past static upload buffer; check ROUNDED product (clamping via picmip/gl_max_size only shrinks afterwards). Also bounds the later w*h products in this function. */
+	for (i = 1; i < w; i <<= 1)
+		;
+	for (x = 1; x < h; x <<= 1)
+		;
+	if ((unsigned)i * x > 1024*512)
 	{
 		Con_Printf ("External %s: %dx%d exceeds upload limit\n", path, w, h);
 		goto reject;
 	}
+
+	if (len != 18 + w * h * (bpp / 8))
+		goto reject;
 
 	if (exact_size)
 	{
@@ -1380,7 +1385,7 @@ int GL_TryLoadExternalTexture (char *identifier, char *path,
 			goto reject;
 		}
 	}
-	else if (w * orig_h != h * orig_w)
+	else if ((unsigned)w * orig_h != (unsigned)h * orig_w)
 	{
 		Con_Printf ("External %s: aspect mismatch (%dx%d vs %dx%d)\n",
 			path, w, h, orig_w, orig_h);
