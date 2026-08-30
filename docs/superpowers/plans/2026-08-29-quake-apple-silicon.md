@@ -829,3 +829,14 @@ double blanks and a dangling paren. Deliberately not touched: id386
 pinned-0 chain (spec-sanctioned), nonintel.c/r_local.h (kept per plan),
 NeXT/__sun__ guards in untouched files, and user-visible "Linux"
 strings (parked as S10).
+
+### Renamed trees to Quake/ + QuakeWorld/; Makefile consolidated at root
+Commit: 11c7dc3. git mv WinQuake → Quake, QW → QuakeWorld; a single root
+Makefile replaces the two per-tree Makefiles (object lists carried over
+verbatim — 53 glquake + 26 qwsv + 46 glqwcl objects; per-tree
+build-macosx/ output unchanged). Bare `make` still prints help. The QW
+check-data target lives on as check-data-qw (check-data now gates only
+the single-player `run` target). Gate commands are now from the repo
+root: `make clean && make build-release build-server build-client`.
+Tree-name references in port-added comments updated; engine-internal
+"qw" gamedir strings and 1996 in-game text untouched.
