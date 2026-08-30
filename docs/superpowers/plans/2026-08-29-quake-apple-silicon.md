@@ -983,3 +983,15 @@ this effect; spec and plan were corrected in the docs commit.
 Gate: every module commit passed make clean && make build-release
 build-server build-client plus the 3-binary SIGKILL smoke protocol
 ("Received signal" count 0 for glquake, qwsv, glqwcl).
+
+### External texture overrides (feature)
+Commits: ca8a30f, b25384c. Spec:
+docs/superpowers/specs/2026-08-30-external-texture-overrides-design.md.
+New GL_TryLoadExternalTexture in both GL clients' gl_draw.c:
+uncompressed bottom-up 24/32-bit TGA through the COM filesystem,
+soft-failing on any malformed content; cvar gl_externaltextures
+(default 1). Seams: brush (Mod_LoadTextures), alias skins and
+sprite frames (gl_model.c), pics (Draw_PicFromWad/Draw_CachePic/
+charset). Exclusions: sky*, progs/player.mdl skins, gfx/menuplyr.
+Tools: tools/extract.py (pak/BSP/WAD2/MDL/SPR -> PNG + manifest),
+tools/install.py (PNG -> validated TGA under game/id1/).
