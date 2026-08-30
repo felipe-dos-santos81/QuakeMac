@@ -755,6 +755,9 @@ int GL_TryLoadExternalTexture (char *identifier, char *path,
 				return glt->texnum;
 	}
 
+	if (numgltextures == MAX_GLTEXTURES)
+		return 0;
+
 	buf = COM_LoadFile (path, 0);
 	if (!buf)
 		return 0;
@@ -769,6 +772,15 @@ int GL_TryLoadExternalTexture (char *identifier, char *path,
 		goto reject;
 	if (len != 18 + w * h * (bpp / 8))
 		goto reject;
+	/* GL_Upload32 Sys_Errors past its static upload buffer; clamping
+	   (picmip/gl_max_size) only shrinks, so a pre-clamp product check
+	   keeps that path unreachable from file content. */
+	if ((unsigned)w * (unsigned)h > 1024*512)
+	{
+		Con_Printf ("External %s: %dx%d exceeds the upload limit\n",
+			path, w, h);
+		goto reject;
+	}
 
 	if (exact_size)
 	{
