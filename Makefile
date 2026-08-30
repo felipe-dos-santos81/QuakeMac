@@ -37,7 +37,7 @@ DBG_CFLAGS = -g -O0
 
 # glquake (single-player)
 QUAKE_BASE_CFLAGS    = -DGLQUAKE -Dstricmp=strcasecmp -I$(QUAKE_DIR) \
-                       -I$(QUAKE_DIR)/platform \
+                       -I$(QUAKE_DIR)/platform -I$(QUAKE_DIR)/sound \
                        -I$(QUAKE_DIR)/macosx-shim $(SDL_CFLAGS)
 QUAKE_RELEASE_CFLAGS = $(QUAKE_BASE_CFLAGS) $(OPT_CFLAGS)
 QUAKE_DEBUG_CFLAGS   = $(QUAKE_BASE_CFLAGS) $(DBG_CFLAGS)
@@ -47,7 +47,8 @@ QUAKE_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 # shared files from QuakeWorld/client/, all with -DSERVERONLY. Headless:
 # no SDL, no OpenGL.
 QW_BASE_CFLAGS           = -Wall -Dstricmp=strcasecmp -I$(QW_CLIENT_DIR) \
-                           -I$(QW_CLIENT_DIR)/platform -I$(QW_SERVER_DIR)
+                           -I$(QW_CLIENT_DIR)/platform -I$(QW_CLIENT_DIR)/sound \
+                           -I$(QW_SERVER_DIR)
 QW_SERVER_CFLAGS         = $(QW_BASE_CFLAGS) -DSERVERONLY
 QW_SERVER_RELEASE_CFLAGS = $(QW_SERVER_CFLAGS) $(OPT_CFLAGS)
 QW_SERVER_DEBUG_CFLAGS   = $(QW_SERVER_CFLAGS) $(DBG_CFLAGS)
@@ -93,8 +94,8 @@ QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/sv_move.o $(QUAKE_BUILDDIR)/sv_user.o \
 	$(QUAKE_BUILDDIR)/zone.o $(QUAKE_BUILDDIR)/view.o \
 	$(QUAKE_BUILDDIR)/wad.o $(QUAKE_BUILDDIR)/world.o \
-	$(QUAKE_BUILDDIR)/snd_dma.o $(QUAKE_BUILDDIR)/snd_mem.o \
-	$(QUAKE_BUILDDIR)/snd_mix.o
+	$(QUAKE_BUILDDIR)/sound/snd_dma.o $(QUAKE_BUILDDIR)/sound/snd_mem.o \
+	$(QUAKE_BUILDDIR)/sound/snd_mix.o
 
 QUAKE_PLATFORM_OBJS = $(QUAKE_BUILDDIR)/platform/gl_vidsdl.o \
                       $(QUAKE_BUILDDIR)/platform/in_sdl.o \
@@ -149,8 +150,9 @@ QW_CLIENT_OBJS = \
 	$(QW_BUILDDIR)/client/pmove.o $(QW_BUILDDIR)/client/pmovetst.o \
 	$(QW_BUILDDIR)/client/r_part.o \
 	$(QW_BUILDDIR)/client/sbar.o $(QW_BUILDDIR)/client/skin.o \
-	$(QW_BUILDDIR)/client/snd_dma.o $(QW_BUILDDIR)/client/snd_mem.o \
-	$(QW_BUILDDIR)/client/snd_mix.o \
+	$(QW_BUILDDIR)/client/sound/snd_dma.o \
+	$(QW_BUILDDIR)/client/sound/snd_mem.o \
+	$(QW_BUILDDIR)/client/sound/snd_mix.o \
 	$(QW_BUILDDIR)/client/view.o $(QW_BUILDDIR)/client/wad.o \
 	$(QW_BUILDDIR)/client/zone.o \
 	$(QW_BUILDDIR)/client/platform/cd_null.o \
@@ -188,11 +190,17 @@ $(QUAKE_BUILDDIR):
 $(QUAKE_BUILDDIR)/platform:
 	mkdir -p $(QUAKE_BUILDDIR)/platform
 
+$(QUAKE_BUILDDIR)/sound:
+	mkdir -p $(QUAKE_BUILDDIR)/sound
+
 # Module pattern rules must precede the tree-root catch-all rule: make 3.81
 # picks the first matching pattern rule whose prerequisites exist, not the
 # shortest stem, so the catch-all would otherwise win and skip the per-module
 # mkdir prereq.
 $(QUAKE_BUILDDIR)/platform/%.o: $(QUAKE_DIR)/platform/%.c | $(QUAKE_BUILDDIR)/platform
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(QUAKE_BUILDDIR)/sound/%.o: $(QUAKE_DIR)/sound/%.c | $(QUAKE_BUILDDIR)/sound
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QUAKE_BUILDDIR)/%.o: $(QUAKE_DIR)/%.c | $(QUAKE_BUILDDIR)
@@ -238,8 +246,14 @@ $(QW_BUILDDIR)/client:
 $(QW_BUILDDIR)/client/platform:
 	mkdir -p $(QW_BUILDDIR)/client/platform
 
+$(QW_BUILDDIR)/client/sound:
+	mkdir -p $(QW_BUILDDIR)/client/sound
+
 # Module rules before the client-root catch-all, as in the glquake section.
 $(QW_BUILDDIR)/client/platform/%.o: $(QW_CLIENT_DIR)/platform/%.c | $(QW_BUILDDIR)/client/platform
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(QW_BUILDDIR)/client/sound/%.o: $(QW_CLIENT_DIR)/sound/%.c | $(QW_BUILDDIR)/client/sound
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QW_BUILDDIR)/client/%.o: $(QW_CLIENT_DIR)/%.c | $(QW_BUILDDIR)/client
