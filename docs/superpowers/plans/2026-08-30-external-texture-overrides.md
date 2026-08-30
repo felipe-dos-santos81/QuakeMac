@@ -147,17 +147,20 @@ def parse_miptex(blob, base):
 
 
 def bsp_textures(bsp):
+    if len(bsp) < 4 + 15 * 8:
+        return []
     version = struct.unpack_from("<i", bsp, 0)[0]
     if version != BSP_VERSION:
         return []
     lumpofs, lumplen = struct.unpack_from("<ii", bsp, 4 + LUMP_TEXTURES * 8)
-    if lumplen == 0:
+    if lumplen < 4 or lumpofs <= 0 or lumpofs + lumplen > len(bsp):
         return []
     num = struct.unpack_from("<i", bsp, lumpofs)[0]
+    num = min(num, (lumplen - 4) // 4)
     out = []
     for i in range(num):
         dataofs = struct.unpack_from("<i", bsp, lumpofs + 4 + i * 4)[0]
-        if dataofs == -1:
+        if dataofs == -1 or lumpofs + dataofs + 40 > len(bsp):
             continue
         tex = parse_miptex(bsp, lumpofs + dataofs)
         if tex:
@@ -166,24 +169,38 @@ def bsp_textures(bsp):
 
 
 def mdl_skins(mdl):
-    """Return [(slot, sub_or_None, pixels)] — sub set for skin groups."""
+    """Return [(slot, sub_or_None, pixels)] — sub set for skin groups.
+    Bounds-checked: a truncated file yields a prefix of the skins."""
     ident, version = struct.unpack_from("<4si", mdl, 0)
-    if ident != b"IDPO" or version != 6:
+    if ident != b"IDPO" or version != 6 or len(mdl) < 84:
         return []
     numskins, skinwidth, skinheight = struct.unpack_from("<iii", mdl, 48)
     s = skinwidth * skinheight
+    if numskins <= 0 or s <= 0:
+        return []
     skins = []
     off = 84  # sizeof(mdl_t)
     for i in range(numskins):
+        if off + 4 > len(mdl):
+            return skins
         skintype = struct.unpack_from("<i", mdl, off)[0]
         off += 4
         if skintype == 0:  # ALIAS_SKIN_SINGLE
+            if off + s > len(mdl):
+                return skins
             skins.append((i, None, mdl[off:off + s]))
             off += s
         else:  # ALIAS_SKIN_GROUP
+            if off + 4 > len(mdl):
+                return skins
             groupskins = struct.unpack_from("<i", mdl, off)[0]
-            off += 4 + groupskins * 4  # numskins + intervals
+            off += 4
+            if groupskins <= 0 or off + groupskins * 4 > len(mdl):
+                return skins
+            off += groupskins * 4  # intervals
             for j in range(groupskins):
+                if off + s > len(mdl):
+                    return skins
                 skins.append((i, j, mdl[off:off + s]))
                 off += s
     return skins
@@ -191,27 +208,47 @@ def mdl_skins(mdl):
 
 def spr_frames(spr):
     """Return [(framenum, w, h, pixels)] — group frames use the
-    engine's framenum*100+j numbering (Mod_LoadSpriteGroup)."""
+    engine's framenum*100+j numbering (Mod_LoadSpriteGroup).
+    Bounds-checked: a truncated file yields a prefix of the frames."""
+    if len(spr) < 36:
+        return []
     ident, version = struct.unpack_from("<4si", spr, 0)
     if ident != b"IDSP" or version != 1:
         return []
     numframes = struct.unpack_from("<i", spr, 24)[0]
+    if numframes <= 0:
+        return []
     frames = []
     off = 36  # sizeof(dsprite_t)
     for fnum in range(numframes):
+        if off + 4 > len(spr):
+            return frames
         ftype = struct.unpack_from("<i", spr, off)[0]
         off += 4
         if ftype == 0:  # SPR_SINGLE
+            if off + 16 > len(spr):
+                return frames
             w, h = struct.unpack_from("<ii", spr, off + 8)
             off += 16
+            if w <= 0 or h <= 0 or off + w * h > len(spr):
+                return frames
             frames.append((fnum, w, h, spr[off:off + w * h]))
             off += w * h
         else:  # SPR_GROUP
+            if off + 4 > len(spr):
+                return frames
             groupframes = struct.unpack_from("<i", spr, off)[0]
-            off += 4 + groupframes * 4
+            off += 4
+            if groupframes <= 0 or off + groupframes * 4 > len(spr):
+                return frames
+            off += groupframes * 4
             for j in range(groupframes):
+                if off + 16 > len(spr):
+                    return frames
                 w, h = struct.unpack_from("<ii", spr, off + 8)
                 off += 16
+                if w <= 0 or h <= 0 or off + w * h > len(spr):
+                    return frames
                 frames.append((fnum * 100 + j, w, h, spr[off:off + w * h]))
                 off += w * h
     return frames
@@ -278,12 +315,15 @@ def main():
         # TYP_PALETTE / TYP_QTEX / others: not pics, skipped
 
     # alias model skins and sprite frames.
-    # name = flattened PNG stem (what install.py matches);
-    # override_path = what the engine looks up (keeps progs/)
+    # name = flattened PNG stem (/ and . become _ so mdl and spr never
+    # collide); override_path keeps the extension, matching the
+    # engine's identifiers ("progs/s_light.mdl_0.tga" vs
+    # "progs/s_light.spr_0.tga")
     for path in sorted(files):
         if path.startswith("progs/") and path.endswith(".mdl"):
-            base = path[:-4]
-            flat = base.replace("/", "_")
+            flat = path.replace("/", "_").replace(".", "_")
+            if len(files[path]) < 52:
+                continue
             _, skinwidth, skinheight = struct.unpack_from("<iii",
                                                           files[path], 48)
             for slot, sub, pixels in mdl_skins(files[path]):
@@ -294,10 +334,9 @@ def main():
                 manifest.append({"name": "%s_%s" % (flat, suffix),
                                  "category": "skin",
                                  "width": skinwidth, "height": skinheight,
-                                 "override_path": "%s_%s.tga" % (base, suffix)})
+                                 "override_path": "%s_%s.tga" % (path, suffix)})
         elif path.startswith("progs/") and path.endswith(".spr"):
-            base = path[:-4]
-            flat = base.replace("/", "_")
+            flat = path.replace("/", "_").replace(".", "_")
             for fnum, w, h, pixels in spr_frames(files[path]):
                 save_png(os.path.join(outroot, "sprites",
                                       "%s_%d.png" % (flat, fnum)),
@@ -305,7 +344,7 @@ def main():
                 manifest.append({"name": "%s_%d" % (flat, fnum),
                                  "category": "sprite",
                                  "width": w, "height": h,
-                                 "override_path": "%s_%d.tga" % (base, fnum)})
+                                 "override_path": "%s_%d.tga" % (path, fnum)})
 
     with open(os.path.join(outroot, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1)
@@ -318,7 +357,7 @@ def main():
         print("  %-6s %d" % (cat, counts.get(cat, 0)))
     if collisions:
         print("name collisions with different pixels (first kept):")
-        for c in collisions:
+        for c in sorted(set(collisions)):
             print("  " + c)
 
 
@@ -327,13 +366,15 @@ if __name__ == "__main__":
 ```
 
 Note the manifest fields: brush/gfx `name` values are bare
-(`wall01`, `conchars`); skin/sprite `name` values are the flattened
-PNG stems (`progs_soldier_0`, `progs_s_light_0`, group skins
-`..._0_1`, sprite group frames `..._201`) so `install.py` can match
-by file stem. `override_path` is the engine-side lookup path and
-keeps the full model name minus extension plus the engine's own
-suffix scheme (`%s_%i` / `%s_%i_%i` on `loadmodel->name`). PNG file
-names equal `<name>.png`; matching uses `name`, not anything else.
+(`wall01`, `conchars`); skin/sprite `name` values are flattened
+PNG stems with `/` and `.` mapped to `_` (`progs_soldier_mdl_0`,
+`progs_s_light_spr_0`, group skins `..._0_1`, sprite group frames
+`..._201`) so `install.py` can match by file stem and mdl/spr never
+collide. `override_path` keeps the full model name WITH extension
+plus the engine's own suffix scheme (`%s_%i` / `%s_%i_%i` on
+`loadmodel->name`), so `progs/s_light.mdl_0.tga` and
+`progs/s_light.spr_0.tga` stay distinct exactly like the engine's
+texture identifiers. PNG file names equal `<name>.png`.
 
 - [ ] **Step 3: Install Pillow if needed**
 
@@ -584,7 +625,7 @@ the engine; the game never reads anything here.
    path). Output is git-ignored: it derives from commercial game
    data.
 2. Regenerate the PNGs you care about with any image tool. Keep
-   the exact stem name (`wall01.png`, `progs_soldier_0.png`, ...).
+   the exact stem name (`wall01.png`, `progs_soldier_mdl_0.png`, ...).
 3. `python3 tools/install.py <png-or-dir> ...` — validates each
    image against the manifest and writes a TGA override into
    `game/id1/<override_path>`. `--gamedir game/qw` targets the QW
@@ -858,18 +899,15 @@ Add the path builder near the top of the file, after the
 =============
 Mod_ExternalTexturePath
 
-Builds the override path from the full model name minus extension:
-"progs/soldier.mdl" + "0" -> "progs/soldier_0.tga"
+Builds the override path from the full model name, extension kept
+(collisions stay impossible because engine identifiers already
+differ by extension): "progs/s_light.mdl" + "0" ->
+"progs/s_light.mdl_0.tga"
 =============
 */
 static void Mod_ExternalTexturePath (char *out, char *suffix)
 {
-	char	*dot;
-
 	strcpy (out, loadmodel->name);
-	dot = strrchr (out, '.');
-	if (dot)
-		*dot = 0;
 	strcat (out, "_");
 	strcat (out, suffix);
 	strcat (out, ".tga");

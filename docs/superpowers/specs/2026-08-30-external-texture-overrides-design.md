@@ -75,9 +75,9 @@ second parser.
 | Class | Seam | Override path | Invariant | mipmap / alpha |
 |---|---|---|---|---|
 | Brush | `Mod_LoadTextures`, gl_model.c:394 (the non-sky branch) | `textures/<name>.tga` | aspect | true / false |
-| Alias skin (single) | `Mod_LoadAllSkins`, gl_model.c:1444 | `<model-minus-ext>_<i>.tga` | aspect | true / false |
-| Alias skin (group) | gl_model.c:1469 | `<model-minus-ext>_<i>_<j>.tga` | aspect | true / false |
-| Sprite frame | `Mod_LoadSpriteFrame`, gl_model.c:1689 | `<sprite-minus-ext>_<framenum>.tga` | aspect | true / true |
+| Alias skin (single) | `Mod_LoadAllSkins`, gl_model.c:1444 | `<model name>_<i>.tga` (extension kept, e.g. `progs/s_light.mdl_0.tga`) | aspect | true / false |
+| Alias skin (group) | gl_model.c:1469 | `<model name>_<i>_<j>.tga` (extension kept) | aspect | true / false |
+| Sprite frame | `Mod_LoadSpriteFrame`, gl_model.c:1689 | `<sprite name>_<framenum>.tga` (extension kept, e.g. `progs/s_light.spr_0.tga`) | aspect | true / true |
 | Pics from lmp | `Draw_CachePic`, gl_draw.c:231 | path minus `.lmp`, plus `.tga` (e.g. `gfx/conback.tga`) | exact w/h | false / true |
 | Pics from wad | `Draw_PicFromWad`, gl_draw.c:183 | `gfx/<lumpname>.tga` (e.g. `gfx/conchars.tga`) | exact w/h | false / true |
 
@@ -86,9 +86,12 @@ Notes per seam:
 - **Brush/skin/sprite identifiers stay exactly what the 8-bit path
   uses** (`mt->name`, `"%s_%i"` / `"%s_%i_%i"` from `loadmodel->name`,
   `"%s_%i"`), so the `gltextures` cache behaves identically.
-  Override *paths* are built from the full `loadmodel->name` with
-  the extension replaced (keeps the `progs/` directory), via one
-  small local path builder in gl_model.c.
+  Override *paths* are the identifier plus `.tga` for skins/sprites
+  — i.e. the full `loadmodel->name` with its extension kept
+  (`progs/s_light.mdl_0.tga` vs `progs/s_light.spr_0.tga`), which
+  stays collision-free because engine identifiers already differ by
+  extension. Brush overrides keep the `textures/` prefix. One small
+  local path builder in gl_model.c constructs them.
 - **Skin texel copy is untouched**: `pheader->texels` (8-bit) stays
   populated because player-color translation consumes it.
 - **Pics replace only the GL texture.** The original lump/wad data
