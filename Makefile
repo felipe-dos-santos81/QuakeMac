@@ -40,6 +40,7 @@ QUAKE_BASE_CFLAGS    = -DGLQUAKE -Dstricmp=strcasecmp -I$(QUAKE_DIR) \
                        -I$(QUAKE_DIR)/platform -I$(QUAKE_DIR)/sound \
                        -I$(QUAKE_DIR)/net -I$(QUAKE_DIR)/render \
                        -I$(QUAKE_DIR)/client -I$(QUAKE_DIR)/server \
+                       -I$(QUAKE_DIR)/common \
                        -I$(QUAKE_DIR)/macosx-shim $(SDL_CFLAGS)
 QUAKE_RELEASE_CFLAGS = $(QUAKE_BASE_CFLAGS) $(OPT_CFLAGS)
 QUAKE_DEBUG_CFLAGS   = $(QUAKE_BASE_CFLAGS) $(DBG_CFLAGS)
@@ -51,7 +52,8 @@ QUAKE_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 QW_BASE_CFLAGS           = -Wall -Dstricmp=strcasecmp -I$(QW_CLIENT_DIR) \
                            -I$(QW_CLIENT_DIR)/platform -I$(QW_CLIENT_DIR)/sound \
                            -I$(QW_CLIENT_DIR)/net -I$(QW_CLIENT_DIR)/render \
-                           -I$(QW_CLIENT_DIR)/client -I$(QW_SERVER_DIR)
+                           -I$(QW_CLIENT_DIR)/client -I$(QW_CLIENT_DIR)/common \
+                           -I$(QW_SERVER_DIR)
 QW_SERVER_CFLAGS         = $(QW_BASE_CFLAGS) -DSERVERONLY
 QW_SERVER_RELEASE_CFLAGS = $(QW_SERVER_CFLAGS) $(OPT_CFLAGS)
 QW_SERVER_DEBUG_CFLAGS   = $(QW_SERVER_CFLAGS) $(DBG_CFLAGS)
@@ -76,9 +78,9 @@ QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/client/cl_demo.o $(QUAKE_BUILDDIR)/client/cl_input.o \
 	$(QUAKE_BUILDDIR)/client/cl_main.o $(QUAKE_BUILDDIR)/client/cl_parse.o \
 	$(QUAKE_BUILDDIR)/client/cl_tent.o $(QUAKE_BUILDDIR)/client/chase.o \
-	$(QUAKE_BUILDDIR)/cmd.o $(QUAKE_BUILDDIR)/common.o \
-	$(QUAKE_BUILDDIR)/client/console.o $(QUAKE_BUILDDIR)/crc.o \
-	$(QUAKE_BUILDDIR)/cvar.o \
+	$(QUAKE_BUILDDIR)/common/cmd.o $(QUAKE_BUILDDIR)/common/common.o \
+	$(QUAKE_BUILDDIR)/client/console.o $(QUAKE_BUILDDIR)/common/crc.o \
+	$(QUAKE_BUILDDIR)/common/cvar.o \
 	$(QUAKE_BUILDDIR)/render/gl_draw.o $(QUAKE_BUILDDIR)/render/gl_mesh.o \
 	$(QUAKE_BUILDDIR)/render/gl_model.o $(QUAKE_BUILDDIR)/render/gl_refrag.o \
 	$(QUAKE_BUILDDIR)/render/gl_rlight.o $(QUAKE_BUILDDIR)/render/gl_rmain.o \
@@ -86,7 +88,7 @@ QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/render/gl_screen.o $(QUAKE_BUILDDIR)/render/gl_warp.o \
 	$(QUAKE_BUILDDIR)/host.o $(QUAKE_BUILDDIR)/host_cmd.o \
 	$(QUAKE_BUILDDIR)/client/keys.o $(QUAKE_BUILDDIR)/client/menu.o \
-	$(QUAKE_BUILDDIR)/mathlib.o \
+	$(QUAKE_BUILDDIR)/common/mathlib.o \
 	$(QUAKE_BUILDDIR)/net/net_dgrm.o $(QUAKE_BUILDDIR)/net/net_loop.o \
 	$(QUAKE_BUILDDIR)/net/net_main.o $(QUAKE_BUILDDIR)/net/net_vcr.o \
 	$(QUAKE_BUILDDIR)/net/net_udp.o $(QUAKE_BUILDDIR)/net/net_bsd.o \
@@ -95,8 +97,8 @@ QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/render/r_part.o $(QUAKE_BUILDDIR)/client/sbar.o \
 	$(QUAKE_BUILDDIR)/server/sv_main.o $(QUAKE_BUILDDIR)/server/sv_phys.o \
 	$(QUAKE_BUILDDIR)/server/sv_move.o $(QUAKE_BUILDDIR)/server/sv_user.o \
-	$(QUAKE_BUILDDIR)/zone.o $(QUAKE_BUILDDIR)/client/view.o \
-	$(QUAKE_BUILDDIR)/wad.o $(QUAKE_BUILDDIR)/server/world.o \
+	$(QUAKE_BUILDDIR)/common/zone.o $(QUAKE_BUILDDIR)/client/view.o \
+	$(QUAKE_BUILDDIR)/common/wad.o $(QUAKE_BUILDDIR)/server/world.o \
 	$(QUAKE_BUILDDIR)/sound/snd_dma.o $(QUAKE_BUILDDIR)/sound/snd_mem.o \
 	$(QUAKE_BUILDDIR)/sound/snd_mix.o
 
@@ -144,20 +146,20 @@ QW_CLIENT_OBJS = \
 	$(QW_BUILDDIR)/client/client/cl_input.o $(QW_BUILDDIR)/client/client/cl_main.o \
 	$(QW_BUILDDIR)/client/client/cl_parse.o $(QW_BUILDDIR)/client/client/cl_pred.o \
 	$(QW_BUILDDIR)/client/client/cl_tent.o $(QW_BUILDDIR)/client/client/cl_cam.o \
-	$(QW_BUILDDIR)/client/cmd.o $(QW_BUILDDIR)/client/common.o \
-	$(QW_BUILDDIR)/client/client/console.o $(QW_BUILDDIR)/client/crc.o \
-	$(QW_BUILDDIR)/client/cvar.o \
-	$(QW_BUILDDIR)/client/client/keys.o $(QW_BUILDDIR)/client/mathlib.o \
-	$(QW_BUILDDIR)/client/md4.o $(QW_BUILDDIR)/client/client/menu.o \
+	$(QW_BUILDDIR)/client/common/cmd.o $(QW_BUILDDIR)/client/common/common.o \
+	$(QW_BUILDDIR)/client/client/console.o $(QW_BUILDDIR)/client/common/crc.o \
+	$(QW_BUILDDIR)/client/common/cvar.o \
+	$(QW_BUILDDIR)/client/client/keys.o $(QW_BUILDDIR)/client/common/mathlib.o \
+	$(QW_BUILDDIR)/client/common/md4.o $(QW_BUILDDIR)/client/client/menu.o \
 	$(QW_BUILDDIR)/client/net/net_chan.o $(QW_BUILDDIR)/client/net/net_udp.o \
-	$(QW_BUILDDIR)/client/pmove.o $(QW_BUILDDIR)/client/pmovetst.o \
+	$(QW_BUILDDIR)/client/common/pmove.o $(QW_BUILDDIR)/client/common/pmovetst.o \
 	$(QW_BUILDDIR)/client/render/r_part.o \
 	$(QW_BUILDDIR)/client/client/sbar.o $(QW_BUILDDIR)/client/client/skin.o \
 	$(QW_BUILDDIR)/client/sound/snd_dma.o \
 	$(QW_BUILDDIR)/client/sound/snd_mem.o \
 	$(QW_BUILDDIR)/client/sound/snd_mix.o \
-	$(QW_BUILDDIR)/client/client/view.o $(QW_BUILDDIR)/client/wad.o \
-	$(QW_BUILDDIR)/client/zone.o \
+	$(QW_BUILDDIR)/client/client/view.o $(QW_BUILDDIR)/client/common/wad.o \
+	$(QW_BUILDDIR)/client/common/zone.o \
 	$(QW_BUILDDIR)/client/platform/cd_null.o \
 	$(QW_BUILDDIR)/client/platform/sys_unix.o \
 	$(QW_BUILDDIR)/client/platform/snd_sdl.o \
@@ -208,6 +210,9 @@ $(QUAKE_BUILDDIR)/client:
 $(QUAKE_BUILDDIR)/server:
 	mkdir -p $(QUAKE_BUILDDIR)/server
 
+$(QUAKE_BUILDDIR)/common:
+	mkdir -p $(QUAKE_BUILDDIR)/common
+
 # Module pattern rules must precede the tree-root catch-all rule: make 3.81
 # picks the first matching pattern rule whose prerequisites exist, not the
 # shortest stem, so the catch-all would otherwise win and skip the per-module
@@ -228,6 +233,9 @@ $(QUAKE_BUILDDIR)/client/%.o: $(QUAKE_DIR)/client/%.c | $(QUAKE_BUILDDIR)/client
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QUAKE_BUILDDIR)/server/%.o: $(QUAKE_DIR)/server/%.c | $(QUAKE_BUILDDIR)/server
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(QUAKE_BUILDDIR)/common/%.o: $(QUAKE_DIR)/common/%.c | $(QUAKE_BUILDDIR)/common
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QUAKE_BUILDDIR)/%.o: $(QUAKE_DIR)/%.c | $(QUAKE_BUILDDIR)
@@ -256,7 +264,7 @@ $(QW_BUILDDIR)/server/%.o: $(QW_SERVER_DIR)/%.c | $(QW_BUILDDIR)/server
 $(QW_BUILDDIR)/server/%.o: $(QW_CLIENT_DIR)/net/%.c | $(QW_BUILDDIR)/server
 	$(CC) $(CFLAGS) -o $@ -c $<
 
-$(QW_BUILDDIR)/server/%.o: $(QW_CLIENT_DIR)/%.c | $(QW_BUILDDIR)/server
+$(QW_BUILDDIR)/server/%.o: $(QW_CLIENT_DIR)/common/%.c | $(QW_BUILDDIR)/server
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 build-server: CFLAGS = $(QW_SERVER_RELEASE_CFLAGS)
@@ -288,6 +296,9 @@ $(QW_BUILDDIR)/client/render:
 $(QW_BUILDDIR)/client/client:
 	mkdir -p $(QW_BUILDDIR)/client/client
 
+$(QW_BUILDDIR)/client/common:
+	mkdir -p $(QW_BUILDDIR)/client/common
+
 # Module rules before the client-root catch-all, as in the glquake section.
 $(QW_BUILDDIR)/client/platform/%.o: $(QW_CLIENT_DIR)/platform/%.c | $(QW_BUILDDIR)/client/platform
 	$(CC) $(CFLAGS) -o $@ -c $<
@@ -302,6 +313,9 @@ $(QW_BUILDDIR)/client/render/%.o: $(QW_CLIENT_DIR)/render/%.c | $(QW_BUILDDIR)/c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QW_BUILDDIR)/client/client/%.o: $(QW_CLIENT_DIR)/client/%.c | $(QW_BUILDDIR)/client/client
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(QW_BUILDDIR)/client/common/%.o: $(QW_CLIENT_DIR)/common/%.c | $(QW_BUILDDIR)/client/common
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QW_BUILDDIR)/client/%.o: $(QW_CLIENT_DIR)/%.c | $(QW_BUILDDIR)/client
