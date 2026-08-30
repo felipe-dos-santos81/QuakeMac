@@ -859,3 +859,91 @@ collapsing the three mkdir rules, and documenting the retained `objects`
 dev gate in README (make help surfaces it). Object lists unchanged; gates:
 serial + parallel (-j) clean builds, debug-flag expansion check, 3-binary
 smoke 0/0/0.
+
+### Architecture pass: input module split, clock unification, dead-code deletions
+Commit: 0bebb45. Architecture
+review surfaced six deepening candidates; the three zero-risk ones were
+applied, the rest parked for a decision loop (below).
+
+Card 1 — input module split out of the SDL3 video driver. New
+Quake/in_sdl.c and QuakeWorld/client/in_sdl.c: verbatim moves of
+XLateSDLKey, install/uninstall_grabs, HandleEvents,
+IN_ActivateMouse/IN_DeactivateMouse, Sys_SendKeyEvents, IN_Init,
+IN_Shutdown, IN_Commands, IN_MouseMove, IN_Move plus the mouse statics
+and the in_mouse/in_dgamouse/m_filter cvars (+ _windowed_mouse in QW).
+Cvar registration moved from VID_Init into IN_Init — safe on every init
+path (host.c calls IN_Init before VID_Init; both arms of cl_main.c's
+__linux__ fork call IN_Init before quake.rc exec). VID_Init's trailing
+mouse_avail/mouse_active assignments moved into IN_Init with the same
+comment; nothing reads the state between the two init calls. gl_vidsdl.c
+keeps window/GL only; sdl_window is non-static, extern'd by in_sdl.c;
+IN_DeactivateMouse declared in input.h (VID_Shutdown calls it).
+Force_CenterView_f deleted — defined in both trees but never registered
+as a console command. VID_LockBuffer seam aligned: Quake's empty
+quakedef.h macros removed, vid.h declarations + gl_vidsdl.c stubs added
+(the form QuakeWorld already used). gl_vidsdl.c shrank 731→456 lines
+(Quake), 758→468 (QW). Makefile: in_sdl.o added to
+QUAKE_PLATFORM_OBJS and QW_CLIENT_OBJS.
+
+Card 3 core — clock interface unified: Sys_FloatTime renamed
+Sys_DoubleTime throughout Quake/ (26 call sites, 9 files incl. sys.h
+and sys_unix.c); all three binaries now speak one clock name. The
+deeper half of card 3 (merging the three sys_unix.c copies, one
+documented init-order contract) is parked — it changes boot paths of
+all three binaries and needs a decision on ordering semantics.
+
+Card 5 — deletion-test cleanup. Deleted: Quake/gl_test.c (100% inside
+#ifdef GLTEST, GLTEST never defined) + its five dormant call sites
+(cl_tent.c TE_SPIKE keeps the #else particle branch; Test_Init/Test_Draw
+blocks in gl_rmisc.c/gl_rmain.c both trees) + the commented GLTEST
+define + gl_test.o from the Makefile. QuakeWorld/client/nonintel.c
+(R_Surf8Patch/R_Surf16Patch/R_SurfacePatch — zero call sites) +
+nonintel.o from the Makefile + the decls in both r_local.h. Orphan
+declarations removed: VID_SetMode/VID_HandlePause (vid.h both trees),
+d_8to16table (definition + extern, zero consumers), sintable/intsintable
+externs (r_shared.h both trees), WINQUAKE_VERSION/D3DQUAKE_VERSION/
+X11_VERSION macros (quakedef.h), IN_ClearStates (Quake/input.h),
+IN_ModeChanged (QW input.h). Kept: LINUX_VERSION and GLQUAKE_VERSION —
+still referenced by the Linux branding strings parked as S10.
+
+Parked for the decision loop: card 2 (one filesystem module — two
+~750-line COM_* implementations on different I/O substrates; substrate,
+CRC policy and caching semantics need choosing), card 4 (split model
+parsing from GL mesh building), card 6 (god-header reduction,
+derivative of 2/4), and card 3's remainder.
+
+Verification: `make clean && make build-release build-server
+build-client` exit 0 from the repo root; 3-binary smoke (SIGKILL
+protocol) with "Received signal" counts 0/0/0; glqwcl brought video up
+at 1024x768.
+
+### Architecture review: cards 2, 3-remainder, 4, 6 closed without code
+No code changes; recorded so future reviews do not re-suggest these.
+The four remaining candidates went through the decision loop and were
+closed by user decision on 2026-08-30:
+
+Card 2 (one filesystem module) — closed as two adapters of one
+historical interface, deliberately not merged. Full convergence
+contradicts the plan's isolation rule (Task 7, Step 2: no cross-tree
+path compiles), the module has been frozen since 1996, and smoke-only
+verification cannot catch pak/cache regressions. Reopen only on a real
+filesystem bug.
+
+Card 3 remainder (merge sys_unix.c ×3, one init-order contract) —
+closed: the three copies implement three genuinely different runtimes
+(GL client with SDL signals vs headless stdin-console server), and the
+shared interface win — one Sys_DoubleTime clock across all binaries —
+is already banked. Changing boot ordering across binaries is semantics
+risk with no payoff.
+
+Card 4 (split model parsing from GL mesh building) — closed for now.
+The feasible shape would be QuakeWorld-only (GL-free parser behind the
+existing -DSERVERONLY seam; delete the server's brush-only model.c
+re-copy), but it cuts renderer code on the live playtest path for a
+parser frozen since 1996. Reopen if a model-loading bug ever needs
+fixing in more than one place.
+
+Card 6 (god-header reduction) — closed as a standing principle, not a
+project: no standalone fix exists; every future deepening should peel
+one module off quakedef.h's 30-header chain with its own narrow
+header.
