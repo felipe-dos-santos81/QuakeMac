@@ -840,3 +840,22 @@ the single-player `run` target). Gate commands are now from the repo
 root: `make clean && make build-release build-server build-client`.
 Tree-name references in port-added comments updated; engine-internal
 "qw" gamedir strings and 1996 in-game text untouched.
+
+### Simplify pass on the consolidated root Makefile
+Commit: 0fe4b59. /simplify four-agent review of 11c7dc3. Applied:
+pkg-config spawns drop from ~101 to 2 per clean build (SDL_CFLAGS/
+SDL_LIBS now :=); optimization tiers factored to OPT_CFLAGS/DBG_CFLAGS;
+data gates renamed per game — check-data-quake and check-data-qw, with
+check-data as the verify-both umbrella (`run` still gates on
+check-data-quake only, so single-player-only data layouts keep working);
+README documents `-j` (verified safe under make 3.81: identical outputs,
+~7x faster) and the new gate names; reworded the cd_null.c CDAudio_Pause
+comment, which read self-contradictorily after the path swap. Deliberately
+not applied: merging QUAKE_LDFLAGS/QW_CLIENT_LDFLAGS (the two binaries'
+link lines may legitimately diverge; drift fails loudly at link), adding
+build-client-debug (absent in the old QW/Makefile; carryover discipline),
+hoisting macosx-shim/ out of Quake/ (pre-existing, documented coupling),
+collapsing the three mkdir rules, and documenting the retained `objects`
+dev gate in README (make help surfaces it). Object lists unchanged; gates:
+serial + parallel (-j) clean builds, debug-flag expansion check, 3-binary
+smoke 0/0/0.
