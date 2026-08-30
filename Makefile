@@ -37,6 +37,7 @@ DBG_CFLAGS = -g -O0
 
 # glquake (single-player)
 QUAKE_BASE_CFLAGS    = -DGLQUAKE -Dstricmp=strcasecmp -I$(QUAKE_DIR) \
+                       -I$(QUAKE_DIR)/platform \
                        -I$(QUAKE_DIR)/macosx-shim $(SDL_CFLAGS)
 QUAKE_RELEASE_CFLAGS = $(QUAKE_BASE_CFLAGS) $(OPT_CFLAGS)
 QUAKE_DEBUG_CFLAGS   = $(QUAKE_BASE_CFLAGS) $(DBG_CFLAGS)
@@ -46,7 +47,7 @@ QUAKE_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 # shared files from QuakeWorld/client/, all with -DSERVERONLY. Headless:
 # no SDL, no OpenGL.
 QW_BASE_CFLAGS           = -Wall -Dstricmp=strcasecmp -I$(QW_CLIENT_DIR) \
-                           -I$(QW_SERVER_DIR)
+                           -I$(QW_CLIENT_DIR)/platform -I$(QW_SERVER_DIR)
 QW_SERVER_CFLAGS         = $(QW_BASE_CFLAGS) -DSERVERONLY
 QW_SERVER_RELEASE_CFLAGS = $(QW_SERVER_CFLAGS) $(OPT_CFLAGS)
 QW_SERVER_DEBUG_CFLAGS   = $(QW_SERVER_CFLAGS) $(DBG_CFLAGS)
@@ -65,7 +66,8 @@ QW_CLIENT_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 # Engine core (Makefile.linuxi386 GLQUAKE_OBJS minus asm objects math/worlda/
 # snd_mixa/sys_dosa; cd_linux→cd_null; snd_linux & gl_vidlinuxglx moved to
 # QUAKE_PLATFORM_OBJS as their SDL3 replacements, with in_sdl.o split out of
-# gl_vidsdl.c as a separate input module)
+# gl_vidsdl.c as a separate input module; cd_null.o and sys_unix.o joined
+# QUAKE_PLATFORM_OBJS in the module-folder restructure)
 QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/cl_demo.o $(QUAKE_BUILDDIR)/cl_input.o \
 	$(QUAKE_BUILDDIR)/cl_main.o $(QUAKE_BUILDDIR)/cl_parse.o \
@@ -91,12 +93,14 @@ QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/sv_move.o $(QUAKE_BUILDDIR)/sv_user.o \
 	$(QUAKE_BUILDDIR)/zone.o $(QUAKE_BUILDDIR)/view.o \
 	$(QUAKE_BUILDDIR)/wad.o $(QUAKE_BUILDDIR)/world.o \
-	$(QUAKE_BUILDDIR)/cd_null.o $(QUAKE_BUILDDIR)/sys_unix.o \
 	$(QUAKE_BUILDDIR)/snd_dma.o $(QUAKE_BUILDDIR)/snd_mem.o \
 	$(QUAKE_BUILDDIR)/snd_mix.o
 
-QUAKE_PLATFORM_OBJS = $(QUAKE_BUILDDIR)/gl_vidsdl.o \
-                      $(QUAKE_BUILDDIR)/in_sdl.o $(QUAKE_BUILDDIR)/snd_sdl.o
+QUAKE_PLATFORM_OBJS = $(QUAKE_BUILDDIR)/platform/gl_vidsdl.o \
+                      $(QUAKE_BUILDDIR)/platform/in_sdl.o \
+                      $(QUAKE_BUILDDIR)/platform/snd_sdl.o \
+                      $(QUAKE_BUILDDIR)/platform/cd_null.o \
+                      $(QUAKE_BUILDDIR)/platform/sys_unix.o
 
 QUAKE_OBJS = $(QUAKE_CORE_OBJS) $(QUAKE_PLATFORM_OBJS)
 
@@ -105,10 +109,6 @@ QUAKE_OBJS = $(QUAKE_CORE_OBJS) $(QUAKE_PLATFORM_OBJS)
 # from $(QW_SERVER_DIR), the last 11 from $(QW_CLIENT_DIR), all with
 # QW_SERVER_CFLAGS. Objects land in $(QW_BUILDDIR)/server/ as in the Linux
 # build.
-# NOTE: the $(QW_SERVER_DIR) pattern rule below must stay first —
-# QuakeWorld/client/ and QuakeWorld/server/ share filenames (model.c
-# historically, sys_unix.c today), and the server variant must own
-# $(QW_BUILDDIR)/server/*.o.
 QW_SERVER_OBJS = \
 	$(QW_BUILDDIR)/server/pr_cmds.o $(QW_BUILDDIR)/server/pr_edict.o \
 	$(QW_BUILDDIR)/server/pr_exec.o $(QW_BUILDDIR)/server/sv_init.o \
@@ -153,15 +153,17 @@ QW_CLIENT_OBJS = \
 	$(QW_BUILDDIR)/client/snd_mix.o \
 	$(QW_BUILDDIR)/client/view.o $(QW_BUILDDIR)/client/wad.o \
 	$(QW_BUILDDIR)/client/zone.o \
-	$(QW_BUILDDIR)/client/cd_null.o $(QW_BUILDDIR)/client/sys_unix.o \
-	$(QW_BUILDDIR)/client/snd_sdl.o \
+	$(QW_BUILDDIR)/client/platform/cd_null.o \
+	$(QW_BUILDDIR)/client/platform/sys_unix.o \
+	$(QW_BUILDDIR)/client/platform/snd_sdl.o \
 	$(QW_BUILDDIR)/client/gl_draw.o $(QW_BUILDDIR)/client/gl_mesh.o \
 	$(QW_BUILDDIR)/client/gl_model.o $(QW_BUILDDIR)/client/gl_ngraph.o \
 	$(QW_BUILDDIR)/client/gl_refrag.o $(QW_BUILDDIR)/client/gl_rlight.o \
 	$(QW_BUILDDIR)/client/gl_rmain.o $(QW_BUILDDIR)/client/gl_rmisc.o \
 	$(QW_BUILDDIR)/client/gl_rsurf.o $(QW_BUILDDIR)/client/gl_screen.o \
 	$(QW_BUILDDIR)/client/gl_warp.o \
-	$(QW_BUILDDIR)/client/gl_vidsdl.o $(QW_BUILDDIR)/client/in_sdl.o
+	$(QW_BUILDDIR)/client/platform/gl_vidsdl.o \
+	$(QW_BUILDDIR)/client/platform/in_sdl.o
 
 .DEFAULT_GOAL := help
 
@@ -182,6 +184,16 @@ help: ## Print this help message
 
 $(QUAKE_BUILDDIR):
 	mkdir -p $(QUAKE_BUILDDIR)
+
+$(QUAKE_BUILDDIR)/platform:
+	mkdir -p $(QUAKE_BUILDDIR)/platform
+
+# Module pattern rules must precede the tree-root catch-all rule: make 3.81
+# picks the first matching pattern rule whose prerequisites exist, not the
+# shortest stem, so the catch-all would otherwise win and skip the per-module
+# mkdir prereq.
+$(QUAKE_BUILDDIR)/platform/%.o: $(QUAKE_DIR)/platform/%.c | $(QUAKE_BUILDDIR)/platform
+	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QUAKE_BUILDDIR)/%.o: $(QUAKE_DIR)/%.c | $(QUAKE_BUILDDIR)
 	$(CC) $(CFLAGS) -o $@ -c $<
@@ -222,6 +234,13 @@ $(QW_BUILDDIR)/qwsv: $(QW_SERVER_OBJS)
 
 $(QW_BUILDDIR)/client:
 	mkdir -p $(QW_BUILDDIR)/client
+
+$(QW_BUILDDIR)/client/platform:
+	mkdir -p $(QW_BUILDDIR)/client/platform
+
+# Module rules before the client-root catch-all, as in the glquake section.
+$(QW_BUILDDIR)/client/platform/%.o: $(QW_CLIENT_DIR)/platform/%.c | $(QW_BUILDDIR)/client/platform
+	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QW_BUILDDIR)/client/%.o: $(QW_CLIENT_DIR)/%.c | $(QW_BUILDDIR)/client
 	$(CC) $(CFLAGS) -o $@ -c $<
