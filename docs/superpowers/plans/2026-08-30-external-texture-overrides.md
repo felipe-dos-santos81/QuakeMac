@@ -779,7 +779,8 @@ int GL_TryLoadExternalTexture (char *identifier, char *path,
 		;
 	for (x = 1; x < h; x <<= 1)
 		;
-	if ((unsigned)i * x > 1024*512)
+	/* 64-bit: i, x reach 65536 and a 32-bit product wraps to 0 */
+	if ((unsigned long long)i * x > 1024u*512u)
 	{
 		Con_Printf ("External %s: %dx%d exceeds the upload limit\n",
 			path, w, h);
@@ -798,7 +799,7 @@ int GL_TryLoadExternalTexture (char *identifier, char *path,
 			goto reject;
 		}
 	}
-	else if ((unsigned)w * orig_h != (unsigned)h * orig_w)
+	else if ((unsigned long long)w * orig_h != (unsigned long long)h * orig_w)
 	{
 		Con_Printf ("External %s: aspect mismatch (%dx%d vs %dx%d)\n",
 			path, w, h, orig_w, orig_h);
