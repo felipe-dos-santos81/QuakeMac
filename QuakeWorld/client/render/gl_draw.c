@@ -1427,10 +1427,27 @@ int GL_TryLoadExternalTexture (char *identifier, char *path,
 	if (numgltextures == MAX_GLTEXTURES)
 		return 0;
 
-	buf = COM_LoadFile (path, 0);
-	if (!buf)
-		return 0;
-	len = com_filesize;
+	{
+		FILE *f;
+		len = COM_FOpenFile (path, &f);
+		if (!f)
+			return 0;
+		buf = malloc (len + 1);
+		if (!buf)
+		{
+			fclose (f);
+			return 0;
+		}
+		buf[len] = 0;
+#ifndef SERVERONLY
+		Draw_BeginDisc ();
+#endif
+		fread (buf, 1, len, f);
+		fclose (f);
+#ifndef SERVERONLY
+		Draw_EndDisc ();
+#endif
+	}
 
 	if (len < 18 || buf[1] != 0 || buf[2] != 2 || (buf[17] & 0x20))
 		goto reject;
@@ -1504,11 +1521,11 @@ int GL_TryLoadExternalTexture (char *identifier, char *path,
 	Con_Printf ("External texture: %s\n", path);
 
 	free (rgba);
-	Z_Free (buf);
+	free (buf);
 	return texture_extension_number - 1;
 
 reject:
-	Z_Free (buf);
+	free (buf);
 	return 0;
 }
 
