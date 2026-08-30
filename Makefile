@@ -39,7 +39,7 @@ DBG_CFLAGS = -g -O0
 QUAKE_BASE_CFLAGS    = -DGLQUAKE -Dstricmp=strcasecmp -I$(QUAKE_DIR) \
                        -I$(QUAKE_DIR)/platform -I$(QUAKE_DIR)/sound \
                        -I$(QUAKE_DIR)/net -I$(QUAKE_DIR)/render \
-                       -I$(QUAKE_DIR)/client \
+                       -I$(QUAKE_DIR)/client -I$(QUAKE_DIR)/server \
                        -I$(QUAKE_DIR)/macosx-shim $(SDL_CFLAGS)
 QUAKE_RELEASE_CFLAGS = $(QUAKE_BASE_CFLAGS) $(OPT_CFLAGS)
 QUAKE_DEBUG_CFLAGS   = $(QUAKE_BASE_CFLAGS) $(DBG_CFLAGS)
@@ -90,13 +90,13 @@ QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/net/net_dgrm.o $(QUAKE_BUILDDIR)/net/net_loop.o \
 	$(QUAKE_BUILDDIR)/net/net_main.o $(QUAKE_BUILDDIR)/net/net_vcr.o \
 	$(QUAKE_BUILDDIR)/net/net_udp.o $(QUAKE_BUILDDIR)/net/net_bsd.o \
-	$(QUAKE_BUILDDIR)/pr_cmds.o $(QUAKE_BUILDDIR)/pr_edict.o \
-	$(QUAKE_BUILDDIR)/pr_exec.o \
+	$(QUAKE_BUILDDIR)/server/pr_cmds.o $(QUAKE_BUILDDIR)/server/pr_edict.o \
+	$(QUAKE_BUILDDIR)/server/pr_exec.o \
 	$(QUAKE_BUILDDIR)/render/r_part.o $(QUAKE_BUILDDIR)/client/sbar.o \
-	$(QUAKE_BUILDDIR)/sv_main.o $(QUAKE_BUILDDIR)/sv_phys.o \
-	$(QUAKE_BUILDDIR)/sv_move.o $(QUAKE_BUILDDIR)/sv_user.o \
+	$(QUAKE_BUILDDIR)/server/sv_main.o $(QUAKE_BUILDDIR)/server/sv_phys.o \
+	$(QUAKE_BUILDDIR)/server/sv_move.o $(QUAKE_BUILDDIR)/server/sv_user.o \
 	$(QUAKE_BUILDDIR)/zone.o $(QUAKE_BUILDDIR)/client/view.o \
-	$(QUAKE_BUILDDIR)/wad.o $(QUAKE_BUILDDIR)/world.o \
+	$(QUAKE_BUILDDIR)/wad.o $(QUAKE_BUILDDIR)/server/world.o \
 	$(QUAKE_BUILDDIR)/sound/snd_dma.o $(QUAKE_BUILDDIR)/sound/snd_mem.o \
 	$(QUAKE_BUILDDIR)/sound/snd_mix.o
 
@@ -205,6 +205,9 @@ $(QUAKE_BUILDDIR)/render:
 $(QUAKE_BUILDDIR)/client:
 	mkdir -p $(QUAKE_BUILDDIR)/client
 
+$(QUAKE_BUILDDIR)/server:
+	mkdir -p $(QUAKE_BUILDDIR)/server
+
 # Module pattern rules must precede the tree-root catch-all rule: make 3.81
 # picks the first matching pattern rule whose prerequisites exist, not the
 # shortest stem, so the catch-all would otherwise win and skip the per-module
@@ -222,6 +225,9 @@ $(QUAKE_BUILDDIR)/render/%.o: $(QUAKE_DIR)/render/%.c | $(QUAKE_BUILDDIR)/render
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QUAKE_BUILDDIR)/client/%.o: $(QUAKE_DIR)/client/%.c | $(QUAKE_BUILDDIR)/client
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+$(QUAKE_BUILDDIR)/server/%.o: $(QUAKE_DIR)/server/%.c | $(QUAKE_BUILDDIR)/server
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QUAKE_BUILDDIR)/%.o: $(QUAKE_DIR)/%.c | $(QUAKE_BUILDDIR)
