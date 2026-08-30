@@ -947,3 +947,39 @@ Card 6 (god-header reduction) — closed as a standing principle, not a
 project: no standalone fix exists; every future deepening should peel
 one module off quakedef.h's 30-header chain with its own narrow
 header.
+
+
+## Module folder restructure: one subfolder per module
+
+Commits: 5edf581..a0940c6 (seven module commits, platform → sound →
+net → render → client → server → common). Spec:
+docs/superpowers/specs/2026-08-30-module-folder-restructure-design.md.
+Plan: docs/superpowers/plans/2026-08-30-module-folder-restructure.md.
+
+Quake/ and QuakeWorld/client/ restructured from flat directories into
+module subfolders: common/, client/, render/, server/ (Quake only),
+net/, sound/, platform/. Headers moved with their modules; headers
+shared by two or more modules live in common/. Quake/host.c and
+host_cmd.c remain at the Quake/ tree root (Host orchestrates every
+module); QuakeWorld/server/ stays flat (already one cohesive module).
+
+Structural only: every move is git mv, zero file-content changes, zero
+#include changes — the Makefile gained one -I flag per module dir, one
+pattern rule per module dir, mirrored object paths
+(build-macosx/<module>/<file>.o). The QW "server pattern rule must stay
+first" NOTE was deleted: mirrored paths make every object name unique,
+and the server's shared-source rule now points at client/common/ and
+client/net/. The card-6 closure stands — quakedef.h remains the hub;
+the folders give future per-module deepenings somewhere to land.
+
+Deviation from plan/spec, found in Task 1: make 3.81 does not prefer
+the shortest-stem pattern rule; it picks the first matching rule whose
+prerequisites exist, so each binary's module pattern rules must precede
+the broader catch-all rule (a catch-all listed first wins and skips the
+per-module mkdir prereq — Task 1's first build failed exactly this way
+before the rules were reordered). The Makefile carries a comment to
+this effect; spec and plan were corrected in the docs commit.
+
+Gate: every module commit passed make clean && make build-release
+build-server build-client plus the 3-binary SIGKILL smoke protocol
+("Received signal" count 0 for glquake, qwsv, glqwcl).

@@ -120,8 +120,11 @@ $(QUAKE_BUILDDIR)/render/%.o: $(QUAKE_DIR)/render/%.c | $(QUAKE_BUILDDIR)/render
 	$(CC) $(CFLAGS) -o $@ -c $<
 ```
 
-The existing root rule stays for `host.o` / `host_cmd.o`; for module
-objects make prefers the module rule (shorter pattern stem). On the QW
+The existing root rule stays for `host.o` / `host_cmd.o`; each binary's
+module rules must be listed **before** that catch-all — make 3.81 picks
+the first matching pattern rule whose prerequisites exist, not the
+shortest stem, so a catch-all listed first wins and skips the
+per-module mkdir prereq. On the QW
 side, the server's shared-source rule becomes two rules —
 `$(QW_BUILDDIR)/server/%.o: $(QW_CLIENT_DIR)/common/%.c` and
 `$(QW_BUILDDIR)/server/%.o: $(QW_CLIENT_DIR)/net/%.c`. QW server objects

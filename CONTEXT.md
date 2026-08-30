@@ -11,12 +11,22 @@ reviews should use these names.
 - **Binaries** — `glquake` (from Quake/), `qwsv` and `glqwcl` (from
   QuakeWorld/). The object lists in the root Makefile are the
   authoritative live set.
-- **Platform modules** — the SDL3 layer, per GL client: the **video
-  module** (`gl_vidsdl.c` — window/GL lifecycle), the **input module**
-  (`in_sdl.c` — IN_* interface plus the SDL event pump), the **sound
-  driver** (`snd_sdl.c` — SNDDMA_*), the **null CD adapter**
-  (`cd_null.c`), and the **platform bootstrap** (`sys_unix.c` — main,
-  clock, the Sys_* family; one copy per binary, deliberately separate).
+- **Modules** — every source lives in one subfolder per module:
+  `common/` (core services + the shared header pool: `quakedef.h`,
+  `protocol.h`, `model.h`, …), `client/` (CL_* plus menu, keys, console,
+  sbar, view), `render/` (gl_*, r_part), `server/` (sv_*, pr_*, world —
+  Quake/ only; QuakeWorld's is `QuakeWorld/server/`, still flat),
+  `net/`, `sound/`, `platform/`. Headers live with their module; a
+  header included by two or more modules lives in `common/`.
+  `Quake/host.c` and `host_cmd.c` stay at the tree root — Host
+  orchestrates every module.
+- **Platform modules** — the SDL3 layer, per GL client, in each tree's
+  `platform/` subdir: the **video module** (`gl_vidsdl.c` — window/GL
+  lifecycle), the **input module** (`in_sdl.c` — IN_* interface plus
+  the SDL event pump), the **sound driver** (`snd_sdl.c` — SNDDMA_*),
+  and the **null CD adapter** (`cd_null.c`); the **platform bootstrap**
+  (`sys_unix.c` — main, clock, the Sys_* family) sits there too, one
+  copy per binary, deliberately separate.
 - **Game data** — `game/id1/` feeds glquake; `game/qw/` feeds
   qwsv/glqwcl; both QuakeWorld binaries mount id1 and qw at startup.
 - **Gates** — the build oracle (`make clean && make build-release

@@ -139,7 +139,7 @@ $(QUAKE_BUILDDIR)/platform:
 	mkdir -p $(QUAKE_BUILDDIR)/platform
 ```
 
-Immediately after the existing rule
+Immediately **before** the existing catch-all rule
 
 ```make
 $(QUAKE_BUILDDIR)/%.o: $(QUAKE_DIR)/%.c | $(QUAKE_BUILDDIR)
@@ -153,7 +153,14 @@ $(QUAKE_BUILDDIR)/platform/%.o: $(QUAKE_DIR)/platform/%.c | $(QUAKE_BUILDDIR)/pl
 	$(CC) $(CFLAGS) -o $@ -c $<
 ```
 
-In the glqwcl section, immediately after the existing rule
+(Correction found during execution: make 3.81 picks the first matching
+pattern rule whose prerequisites exist, not the shortest stem. Listing
+this rule after the catch-all made the catch-all win and the build fail
+with "unable to open output file" — the mkdir prereq never ran. Module
+rules always precede the catch-all.)
+
+In the glqwcl section, immediately **before** the existing catch-all
+rule (same ordering constraint as above)
 
 ```make
 $(QW_BUILDDIR)/client/%.o: $(QW_CLIENT_DIR)/%.c | $(QW_BUILDDIR)/client
