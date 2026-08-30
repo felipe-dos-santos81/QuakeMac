@@ -1,9 +1,12 @@
 # Quake (GPL source) — Apple Silicon port
 
-The 1999 id Software GPL Quake source, maintained for **macOS on Apple
-Silicon (arm64) only**. Windows/DOS/Linux/Sun platform code, the software
-renderer, and the x86 assembly have been removed; the engines build through
-an additive SDL3 platform layer. See `gnu.txt` for the license.
+A fork of [id-software/quake](https://github.com/id-software/quake) —
+the 1999 id Software GPL release — simplified into an Apple Silicon port
+and maintained for educational purposes only. The target is **macOS on
+Apple Silicon (arm64) only**: Windows/DOS/Linux/Sun platform code, the
+software renderer, and the x86 assembly have been removed; the engines
+build through an additive SDL3 platform layer. See `gnu.txt` for the
+license.
 
 ## What builds
 
@@ -38,7 +41,11 @@ Other targets: `build-debug` / `build-server-debug`, `check-data`
 (both games; `check-data-quake` / `check-data-qw` check one), `run` /
 `run-server` / `run-client`, `clean`.
 
-## Game data
+## Game data (not included)
+
+The engines do not run without the base game files, which are not
+included in this repo. Copy them from a legally owned Quake into
+`game/` (gitignored):
 
 ```
 game/
@@ -46,10 +53,12 @@ game/
 └── qw/    qwprogs.dat and pak0.pak         ← qwsv / glqwcl
 ```
 
-`qwprogs.dat` ships in this repo at `QuakeWorld/progs/qwprogs.dat`; the
-`.pak` files must come from your copy of Quake. `make check-data`
+`pak0.pak` (plus `pak1.pak` for the registered game) lives in the
+`id1/` folder of your Quake installation. For QuakeWorld, also copy
+`qwprogs.dat` into `game/qw/` — a copy ships in this repo at
+`QuakeWorld/progs/qwprogs.dat`. `make check-data`
 (or `check-data-quake` / `check-data-qw` per game) verifies the
-layouts before launching.
+layout before launching.
 
 ## Run
 

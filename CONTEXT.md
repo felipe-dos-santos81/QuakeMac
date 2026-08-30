@@ -3,6 +3,8 @@
 Named concepts for this repository. Plans, specs, and architecture
 reviews should use these names.
 
+- **Provenance** — a fork of id-software/quake (the 1999 GPL release),
+  simplified for the Apple Silicon port; educational purposes only.
 - **Trees** — `Quake/` (single-player engine) and `QuakeWorld/`
   (`client/` + `server/` + `progs/`). Same-named files in different
   trees are separate modules that may drift; files are deliberately not
