@@ -11,7 +11,7 @@ void CDAudio_Stop(void)
 
 
 /* referenced by cl_parse.c (server-triggered cd pause); present in
-   Quake/cd_null.c but missing here */
+   Quake/cd_null.c, added here so the QuakeWorld client links */
 void CDAudio_Pause(void)
 {
 }

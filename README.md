@@ -31,8 +31,12 @@ make build-release               # → Quake/build-macosx/glquake
 make build-server build-client   # → QuakeWorld/build-macosx/qwsv, glqwcl
 ```
 
-Other targets: `build-debug` / `build-server-debug`, `check-data` /
-`check-data-qw`, `run` / `run-server` / `run-client`, `clean`.
+The three builds are independent — add `-j` to parallelize, e.g.
+`make -j build-release build-server build-client`.
+
+Other targets: `build-debug` / `build-server-debug`, `check-data`
+(both games; `check-data-quake` / `check-data-qw` check one), `run` /
+`run-server` / `run-client`, `clean`.
 
 ## Game data
 
@@ -43,8 +47,9 @@ game/
 ```
 
 `qwprogs.dat` ships in this repo at `QuakeWorld/progs/qwprogs.dat`; the
-`.pak` files must come from your copy of Quake. `make check-data` /
-`make check-data-qw` verify the layouts before launching.
+`.pak` files must come from your copy of Quake. `make check-data`
+(or `check-data-quake` / `check-data-qw` per game) verifies the
+layouts before launching.
 
 ## Run
 

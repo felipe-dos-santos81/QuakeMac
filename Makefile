@@ -26,15 +26,20 @@ QW_BUILDDIR    = $(QW_DIR)/build-macosx
 QW_CLIENT_DIR  = $(QW_DIR)/client
 QW_SERVER_DIR  = $(QW_DIR)/server
 GAMEDIR       ?= $(CURDIR)/game
-SDL_CFLAGS     = $(shell pkg-config sdl3 --cflags)
-SDL_LIBS       = $(shell pkg-config sdl3 --libs)
+# := so pkg-config runs once at parse time, not once per compile line
+SDL_CFLAGS     := $(shell pkg-config sdl3 --cflags)
+SDL_LIBS       := $(shell pkg-config sdl3 --libs)
 GL_LIBS        = -framework OpenGL
+
+# Optimization tiers, shared by all three binaries
+OPT_CFLAGS = -O2 -ffast-math
+DBG_CFLAGS = -g -O0
 
 # glquake (single-player)
 QUAKE_BASE_CFLAGS    = -DGLQUAKE -Dstricmp=strcasecmp -I$(QUAKE_DIR) \
                        -I$(QUAKE_DIR)/macosx-shim $(SDL_CFLAGS)
-QUAKE_RELEASE_CFLAGS = $(QUAKE_BASE_CFLAGS) -O2 -ffast-math
-QUAKE_DEBUG_CFLAGS   = $(QUAKE_BASE_CFLAGS) -g -O0
+QUAKE_RELEASE_CFLAGS = $(QUAKE_BASE_CFLAGS) $(OPT_CFLAGS)
+QUAKE_DEBUG_CFLAGS   = $(QUAKE_BASE_CFLAGS) $(DBG_CFLAGS)
 QUAKE_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 
 # qwsv (dedicated server): server files compile from QuakeWorld/server/,
@@ -43,8 +48,8 @@ QUAKE_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 QW_BASE_CFLAGS           = -Wall -Dstricmp=strcasecmp -I$(QW_CLIENT_DIR) \
                            -I$(QW_SERVER_DIR)
 QW_SERVER_CFLAGS         = $(QW_BASE_CFLAGS) -DSERVERONLY
-QW_SERVER_RELEASE_CFLAGS = $(QW_SERVER_CFLAGS) -O2 -ffast-math
-QW_SERVER_DEBUG_CFLAGS   = $(QW_SERVER_CFLAGS) -g -O0
+QW_SERVER_RELEASE_CFLAGS = $(QW_SERVER_CFLAGS) $(OPT_CFLAGS)
+QW_SERVER_DEBUG_CFLAGS   = $(QW_SERVER_CFLAGS) $(DBG_CFLAGS)
 QW_SERVER_LDFLAGS        = -lm
 
 # glqwcl (GL client): Makefile.Linux compiles every glclient object with
@@ -53,7 +58,7 @@ QW_SERVER_LDFLAGS        = -lm
 # the shared Phase-1 shim (reused, not duplicated).
 QW_CLIENT_CFLAGS         = $(QW_BASE_CFLAGS) -DGLQUAKE \
                            -I$(QUAKE_DIR)/macosx-shim $(SDL_CFLAGS)
-QW_CLIENT_RELEASE_CFLAGS = $(QW_CLIENT_CFLAGS) -O2 -ffast-math
+QW_CLIENT_RELEASE_CFLAGS = $(QW_CLIENT_CFLAGS) $(OPT_CFLAGS)
 QW_CLIENT_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 
 # ── glquake objects ──────────────────────────────────────────────────────────
@@ -160,8 +165,8 @@ QW_CLIENT_OBJS = \
 .DEFAULT_GOAL := help
 
 .PHONY: help objects build-release build-debug build-server \
-	build-server-debug build-client check-data check-data-qw run \
-	run-server run-client clean
+	build-server-debug build-client check-data check-data-quake \
+	check-data-qw run run-server run-client clean
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
@@ -228,7 +233,9 @@ $(QW_BUILDDIR)/glqwcl: $(QW_CLIENT_OBJS)
 
 # ── Data gates & run ─────────────────────────────────────────────────────────
 
-check-data: ## Verify single-player game data (id1/pak0.pak) is present
+check-data: check-data-quake check-data-qw ## Verify all game data (id1 + qw)
+
+check-data-quake: ## Verify single-player game data (id1/pak0.pak) is present
 	@if [ ! -f "$(GAMEDIR)/id1/pak0.pak" ]; then \
 		echo "ERROR: game data not found."; \
 		echo "Expected: $(GAMEDIR)/id1/pak0.pak"; \
@@ -249,7 +256,7 @@ check-data-qw: ## Verify QuakeWorld game data (qw/qwprogs.dat, qw/pak0.pak) is p
 	fi
 	@echo "Game data OK: $(GAMEDIR)/qw"
 
-run: check-data build-release ## Launch glquake against $(GAMEDIR)
+run: check-data-quake build-release ## Launch glquake against $(GAMEDIR)
 	$(QUAKE_BUILDDIR)/glquake -basedir "$(GAMEDIR)"
 
 run-server: check-data-qw build-server ## Launch qwsv against $(GAMEDIR)/qw
