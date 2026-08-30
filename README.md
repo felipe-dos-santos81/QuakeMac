@@ -3,18 +3,17 @@
 The 1999 id Software GPL Quake source, maintained for **macOS on Apple
 Silicon (arm64) only**. Windows/DOS/Linux/Sun platform code, the software
 renderer, and the x86 assembly have been removed; the engines build through
-an additive SDL3 platform layer. See `readme.txt` for John Carmack's
-original release notes and `gnu.txt` for the license.
+an additive SDL3 platform layer. See `gnu.txt` for the license.
 
 ## What builds
 
 | Binary | Tree | What it is |
 |---|---|---|
-| `glquake` | `WinQuake/` | Single-player OpenGL client |
-| `qwsv` | `QW/` | QuakeWorld dedicated server (headless) |
-| `glqwcl` | `QW/` | QuakeWorld OpenGL client |
+| `glquake` | `Quake/` | Single-player OpenGL client |
+| `qwsv` | `QuakeWorld/` | QuakeWorld dedicated server (headless) |
+| `glqwcl` | `QuakeWorld/` | QuakeWorld OpenGL client |
 
-`QW/progs/` holds the QuakeWorld QuakeC source and `qwprogs.dat`.
+`QuakeWorld/progs/` holds the QuakeWorld QuakeC source and `qwprogs.dat`.
 
 ## Prerequisites
 
@@ -24,15 +23,16 @@ original release notes and `gnu.txt` for the license.
 
 ## Build
 
-Bare `make` prints the target list in each tree.
+A single `Makefile` lives at the repo root; bare `make` prints the target
+list.
 
 ```sh
-cd WinQuake && make build-release        # → build-macosx/glquake
-cd QW && make build-server build-client  # → build-macosx/qwsv, glqwcl
+make build-release               # → Quake/build-macosx/glquake
+make build-server build-client   # → QuakeWorld/build-macosx/qwsv, glqwcl
 ```
 
-Other targets: `build-debug` / `build-server-debug`, `check-data`, `run` /
-`run-server` / `run-client`, `clean`.
+Other targets: `build-debug` / `build-server-debug`, `check-data` /
+`check-data-qw`, `run` / `run-server` / `run-client`, `clean`.
 
 ## Game data
 
@@ -42,16 +42,16 @@ game/
 └── qw/    qwprogs.dat and pak0.pak         ← qwsv / glqwcl
 ```
 
-`qwprogs.dat` ships in this repo at `QW/progs/qwprogs.dat`; the `.pak`
-files must come from your copy of Quake. `make check-data` verifies the
-layout before launching.
+`qwprogs.dat` ships in this repo at `QuakeWorld/progs/qwprogs.dat`; the
+`.pak` files must come from your copy of Quake. `make check-data` /
+`make check-data-qw` verify the layouts before launching.
 
 ## Run
 
 ```sh
-cd WinQuake && make run          # glquake against ../game
-cd QW && make run-server         # qwsv against ../game/qw
-cd QW && make run-client         # glqwcl; then: connect localhost
+make run          # glquake against game/
+make run-server   # qwsv against game/qw
+make run-client   # glqwcl; then: connect localhost
 ```
 
 ## Documentation

@@ -209,7 +209,7 @@ void GL_Bind (int texnum);
 #define    TEXTURE0_SGIS				0x835E
 #define    TEXTURE1_SGIS				0x835F
 
-/* Unconditional, as in WinQuake/glquake.h: gl_draw.c's GL_SelectTexture
+/* Unconditional, as in Quake/glquake.h: gl_draw.c's GL_SelectTexture
    callsite is compiled off Linux too (only guarded by #ifndef __linux__),
    so non-Windows needs the declarations. APIENTRY comes from the GL shim. */
 typedef void (APIENTRY *lpMTexFUNC) (GLenum, GLfloat, GLfloat);

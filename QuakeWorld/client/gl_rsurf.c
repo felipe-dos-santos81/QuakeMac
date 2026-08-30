@@ -275,7 +275,7 @@ extern	float	speedscale;		// for top sky and bottom sky
 void DrawGLWaterPoly (glpoly_t *p);
 void DrawGLWaterPolyLightmap (glpoly_t *p);
 
-/* Unconditional, as in WinQuake/gl_rsurf.c — gl_draw.c's GL_SelectTexture
+/* Unconditional, as in Quake/gl_rsurf.c — gl_draw.c's GL_SelectTexture
    callsite is compiled off Linux, so the symbols must exist for the link. */
 lpMTexFUNC qglMTexCoord2fSGIS = NULL;
 lpSelTexFUNC qglSelectTextureSGIS = NULL;

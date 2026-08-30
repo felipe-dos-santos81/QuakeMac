@@ -2,9 +2,10 @@
 snd_sdl.c — SDL3 audio driver for the QuakeWorld GL client (glqwcl) on
 macOS arm64.
 
-Adapted copy of WinQuake/snd_sdl.c (Task 3), verbatim except for this
-header. Copied here so #include "quakedef.h" resolves against QW/client
-headers, not WinQuake's (Task 7 decision rule; see gl_vidsdl.c).
+Adapted copy of Quake/snd_sdl.c (Task 3), verbatim except for this
+header. Copied here so #include "quakedef.h" resolves against
+QuakeWorld/client headers, not Quake's (Task 7 decision rule; see
+gl_vidsdl.c).
 
 Replaces snd_linux.c (/dev/dsp + mmap) with an SDL3 callback device.
 Format/parm handling mirrors snd_linux.c:37-140.

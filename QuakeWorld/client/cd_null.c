@@ -11,7 +11,7 @@ void CDAudio_Stop(void)
 
 
 /* referenced by cl_parse.c (server-triggered cd pause); present in
-   WinQuake/cd_null.c but missing here */
+   Quake/cd_null.c but missing here */
 void CDAudio_Pause(void)
 {
 }

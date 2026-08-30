@@ -2,14 +2,14 @@
 gl_vidsdl.c — SDL3 video/GL/input driver for the QuakeWorld GL client
 (glqwcl) on macOS arm64.
 
-Adapted copy of WinQuake/gl_vidsdl.c (Task 4) for the QW client: the body
-is verbatim except for the additions noted inline (_windowed_mouse cvar and
-the VID_LockBuffer/VID_UnlockBuffer stubs that QW's menu.c links against,
-mirroring gl_vidlinuxglx.c). It is copied here — not compiled by path from
-../WinQuake — because a quoted #include "quakedef.h" resolves relative to
-the source file's directory; path-compiling would pull the WinQuake header
-set into this QW translation unit (struct/type drift risk). Isolated per the
-plan's decision rule (Task 7, Step 2).
+Adapted copy of Quake/gl_vidsdl.c (Task 4) for the QuakeWorld client: the
+body is verbatim except for the additions noted inline (_windowed_mouse
+cvar and the VID_LockBuffer/VID_UnlockBuffer stubs that QuakeWorld's
+menu.c links against, mirroring gl_vidlinuxglx.c). It is copied here — not
+compiled by path from ../Quake — because a quoted #include "quakedef.h"
+resolves relative to the source file's directory; path-compiling would pull
+the Quake header set into this QuakeWorld translation unit (struct/type
+drift risk). Isolated per the plan's decision rule (Task 7, Step 2).
 
 Replaces gl_vidlinuxglx.c (X11/GLX/DGA). Structure mirrors that file
 section by section; only the windowing calls change.
@@ -48,8 +48,8 @@ unsigned		d_8to24table[256];
 unsigned char	d_15to8table[65536];
 
 cvar_t	vid_mode = {"vid_mode","0",false};
-/* QW menu.c (M_AdjustSliders/M_Options_Draw) toggles this; defined by the
-   reference gl_vidlinuxglx.c. Present here so the client links. */
+/* QuakeWorld menu.c (M_AdjustSliders/M_Options_Draw) toggles this; defined
+   by the reference gl_vidlinuxglx.c. Present here so the client links. */
 cvar_t	_windowed_mouse = {"_windowed_mouse","0", true};
 
 static qboolean        mouse_avail;
@@ -99,9 +99,9 @@ void D_EndDirectRect (int x, int y, int width, int height)
 {
 }
 
-/* QW menu.c's M_Draw locks/unlocks around console background drawing;
-   gl_vidlinuxglx.c:787-788 provides these as empty stubs for GL, and this
-   driver does the same. */
+/* QuakeWorld menu.c's M_Draw locks/unlocks around console background
+   drawing; gl_vidlinuxglx.c:787-788 provides these as empty stubs for GL,
+   and this driver does the same. */
 void VID_LockBuffer(void)
 {
 }
