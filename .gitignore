@@ -4,3 +4,4 @@ build-macosx/
 .DS_Store
 .qwen/
 graphify-out/
+tools/extracted/
