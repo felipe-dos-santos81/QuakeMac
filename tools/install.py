@@ -24,14 +24,16 @@ def load_manifest():
 
 def write_tga(path, img):
     """Write an uncompressed bottom-up TGA (engine contract)."""
+    img = img.convert("RGBA")
+    has_alpha = min(img.getchannel("A").getdata()) < 255
     img = img.transpose(Image.FLIP_TOP_BOTTOM)
-    if img.mode == "RGBA" and min(img.getchannel("A").getdata()) < 255:
+    if has_alpha:
         channels = 4
         r, g, b, a = img.split()
         ordered = Image.merge("RGBA", (b, g, r, a))
     else:
         channels = 3
-        r, g, b = img.convert("RGB").split()
+        r, g, b, _ = img.split()
         ordered = Image.merge("RGB", (b, g, r))
     header = struct.pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0,
                          img.width, img.height, channels * 8, 0)
@@ -114,6 +116,19 @@ def selftest():
         status, msg = install_one(os.path.join(tmp, "nope.png"), entries, tmp)
         assert status == "unknown"
 
+        # palette-mode PNG with a transparent index still gets 32-bit
+        pal = Image.new("P", (4, 2))
+        pal.putpalette([i % 256 for i in range(768)])
+        pal.info["transparency"] = 1
+        pal.putpixel((0, 0), 1)
+        palpng = os.path.join(tmp, "walltest.png")
+        pal.save(palpng)
+        status, dest = install_one(palpng, entries, tmp)
+        assert status == "installed", status
+        data = open(dest, "rb").read()
+        assert struct.unpack("<BBBHHBHHHHBB", data[:18])[10] == 32, \
+            "palette transparency lost"
+
     print("selftest OK")
 
 
@@ -123,7 +138,7 @@ def main():
         selftest()
         return
     gamedir = os.path.join("game", "id1")
-    if args[:2] == ["--gamedir"]:
+    if args[:1] == ["--gamedir"]:
         gamedir, args = args[1], args[2:]
     if not args:
         sys.exit(__doc__)
