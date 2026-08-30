@@ -1,0 +1,6 @@
+game/
+build-macosx/
+*.o
+.DS_Store
+.qwen/
+graphify-out/

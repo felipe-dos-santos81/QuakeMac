@@ -1,0 +1,831 @@
+# Quake on Apple Silicon Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Compile this repo's GLQuake engine (Phase 1) and QuakeWorld server + client (Phase 2) natively on macOS arm64 using an additive SDL3 platform layer, then run them against user-provided game data.
+
+**Architecture:** All 1999 engine C code compiles unchanged in principle; the Linux platform drivers (`gl_vidlinuxglx.c`, `snd_linux.c`, `cd_linux.c`) are replaced by new SDL3 files (`gl_vidsdl.c`, `snd_sdl.c`, existing `cd_null.c`). x86 asm is excluded via the existing `id386` guards (auto-0 on arm64). Builds use new reference-styled Makefiles with object lists cloned from the repo's own `Makefile.linuxi386` / `Makefile.Linux`.
+
+**Tech Stack:** C (C89-era), Apple clang, GNU make, SDL3 3.4.x (`pkg-config sdl3`), macOS OpenGL framework (legacy compatibility profile), arm64.
+
+**Spec:** `docs/superpowers/specs/2026-08-29-quake-apple-silicon-design.md`
+
+## Global Constraints
+
+- **arm64 only** — no x86_64/universal builds.
+- **SDL3 via pkg-config** — `$(shell pkg-config sdl3 --cflags)` / `--libs`; do not hardcode paths. SDL2 must not be used.
+- **No asm objects** — `math.s`, `worlda.s`, `snd_mixa.s`, `sys_dosa.s` (and all QW asm) are never compiled; `id386` must stay header-automatic (never force it with a `-D` flag).
+- **Original files: minimal semantic fixes only** — no gameplay/behavior changes; no refactoring; every fix is appended to the Fixes Ledger at the bottom of this plan as `file:line — one-line rationale`.
+- **Warnings allowed, errors zero** — never build with `-Werror`; never silence warnings globally except `-fcommon` if Task 5's decision rule triggers.
+- **Never commit** build output (`build-macosx/`, `*.o`, binaries) or game data (`game/`).
+- **Reference Makefile style** — header comment, variables block, `.PHONY`, self-documenting `help` from `## ` comments, `# ── Section ─` dividers, kebab-case targets, `clean` (as established in Task 1 and mirrored in Task 6).
+- **Game data** — user supplies `pak0.pak`/`pak1.pak` into `game/id1/`; `check-data` gates every `run` target.
+
+## File Structure
+
+| File | Responsibility | Status |
+|---|---|---|
+| `WinQuake/Makefile.macosx` | Phase-1 build: objects, link, data gate, run | Create (Task 1) |
+| `WinQuake/macosx-shim/GL/gl.h` | Redirect `<GL/gl.h>` → `<OpenGL/gl.h>` | Create (Task 1) |
+| `WinQuake/macosx-shim/GL/glu.h` | Redirect `<GL/glu.h>` → `<OpenGL/glu.h>` | Create (Task 1) |
+| `.gitignore` | Ignore `game/`, `build-macosx/`, objects | Create (Task 1) |
+| `WinQuake/snd_sdl.c` | `SNDDMA_*` sound driver on SDL3 audio | Create (Task 3) |
+| `WinQuake/gl_vidsdl.c` | `VID_*`/`Sys_SendKeyEvents`/GL context on SDL3 | Create (Task 4) |
+| `QW/Makefile.macosx` | Phase-2 build: `qwsv`, `glqwcl` | Create (Task 6) |
+| `QW/client/gl_vidsdl.c`, `QW/client/snd_sdl.c` | Adapted SDL3 layer for QW client — only if direct reuse fails (Task 7 decision rule) | Conditional (Task 7) |
+| `game/id1/`, `game/qw/` | User game data (git-ignored) | User-supplied |
+
+---
+
+### Task 1: Build scaffold, GL header shims, data gate
+
+**Files:**
+- Create: `WinQuake/Makefile.macosx`
+- Create: `WinQuake/macosx-shim/GL/gl.h`
+- Create: `WinQuake/macosx-shim/GL/glu.h`
+- Create: `.gitignore` (repo root)
+
+**Interfaces:**
+- Consumes: nothing (first task)
+- Produces: the `make -f Makefile.macosx` interface used by every later task — targets `help`, `objects`, `build-release`, `build-debug`, `check-data`, `run`, `clean`; variables `BUILDDIR=build-macosx`, `GAMEDIR`; the `CORE_OBJS` object list (engine minus platform drivers) and `PLATFORM_OBJS` (`gl_vidsdl.o snd_sdl.o`)
+
+- [ ] **Step 1: Write `WinQuake/macosx-shim/GL/gl.h`**
+
+```c
+#include <OpenGL/gl.h>
+```
+
+- [ ] **Step 2: Write `WinQuake/macosx-shim/GL/glu.h`**
+
+```c
+#include <OpenGL/glu.h>
+```
+
+Rationale: `glquake.h:30-31` includes `<GL/gl.h>`/`<GL/glu.h>`; macOS SDK exposes them under `<OpenGL/...>`. The shim avoids editing `glquake.h`. GLU is genuinely used (`gluBuild2DMipmaps`, `gluScaleImage` in `gl_draw.c:1030,1035`), so the redirect is real, not a stub.
+
+- [ ] **Step 3: Write repo-root `.gitignore`**
+
+```
+game/
+WinQuake/build-macosx/
+QW/build-macosx/
+*.o
+```
+
+- [ ] **Step 4: Write `WinQuake/Makefile.macosx`**
+
+```make
+# Makefile.macosx — GLQuake for Apple Silicon (macOS arm64)
+# Phase 1 of the SDL3 port. Object list cloned from Makefile.linuxi386
+# (GLQUAKE_OBJS) minus the four x86 asm objects; Linux vid/snd/cd drivers
+# replaced by gl_vidsdl.c / snd_sdl.c / cd_null.c.
+# Spec: docs/superpowers/specs/2026-08-29-quake-apple-silicon-design.md
+
+SERVICE = GLQuake (macOS arm64)
+
+# Variables
+CC             = cc
+BUILDDIR       = build-macosx
+GAMEDIR       ?= $(CURDIR)/../game
+SDL_CFLAGS     = $(shell pkg-config sdl3 --cflags)
+SDL_LIBS       = $(shell pkg-config sdl3 --libs)
+GL_LIBS        = -framework OpenGL
+BASE_CFLAGS    = -DGLQUAKE -Dstricmp=strcasecmp -I. -Imacosx-shim $(SDL_CFLAGS)
+RELEASE_CFLAGS = $(BASE_CFLAGS) -O2 -ffast-math
+DEBUG_CFLAGS   = $(BASE_CFLAGS) -g -O0
+LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
+
+# Engine core (Makefile.linuxi386 GLQUAKE_OBJS minus asm objects math/worlda/
+# snd_mixa/sys_dosa; cd_linux→cd_null; snd_linux & gl_vidlinuxglx moved to
+# PLATFORM_OBJS as their SDL3 replacements)
+CORE_OBJS = \
+	$(BUILDDIR)/cl_demo.o $(BUILDDIR)/cl_input.o $(BUILDDIR)/cl_main.o \
+	$(BUILDDIR)/cl_parse.o $(BUILDDIR)/cl_tent.o $(BUILDDIR)/chase.o \
+	$(BUILDDIR)/cmd.o $(BUILDDIR)/common.o $(BUILDDIR)/console.o \
+	$(BUILDDIR)/crc.o $(BUILDDIR)/cvar.o \
+	$(BUILDDIR)/gl_draw.o $(BUILDDIR)/gl_mesh.o $(BUILDDIR)/gl_model.o \
+	$(BUILDDIR)/gl_refrag.o $(BUILDDIR)/gl_rlight.o $(BUILDDIR)/gl_rmain.o \
+	$(BUILDDIR)/gl_rmisc.o $(BUILDDIR)/gl_rsurf.o $(BUILDDIR)/gl_screen.o \
+	$(BUILDDIR)/gl_test.o $(BUILDDIR)/gl_warp.o \
+	$(BUILDDIR)/host.o $(BUILDDIR)/host_cmd.o $(BUILDDIR)/keys.o \
+	$(BUILDDIR)/menu.o $(BUILDDIR)/mathlib.o \
+	$(BUILDDIR)/net_dgrm.o $(BUILDDIR)/net_loop.o $(BUILDDIR)/net_main.o \
+	$(BUILDDIR)/net_vcr.o $(BUILDDIR)/net_udp.o $(BUILDDIR)/net_bsd.o \
+	$(BUILDDIR)/pr_cmds.o $(BUILDDIR)/pr_edict.o $(BUILDDIR)/pr_exec.o \
+	$(BUILDDIR)/r_part.o $(BUILDDIR)/sbar.o \
+	$(BUILDDIR)/sv_main.o $(BUILDDIR)/sv_phys.o $(BUILDDIR)/sv_move.o \
+	$(BUILDDIR)/sv_user.o $(BUILDDIR)/zone.o $(BUILDDIR)/view.o \
+	$(BUILDDIR)/wad.o $(BUILDDIR)/world.o \
+	$(BUILDDIR)/cd_null.o $(BUILDDIR)/sys_linux.o \
+	$(BUILDDIR)/snd_dma.o $(BUILDDIR)/snd_mem.o $(BUILDDIR)/snd_mix.o
+
+PLATFORM_OBJS = $(BUILDDIR)/gl_vidsdl.o $(BUILDDIR)/snd_sdl.o
+
+OBJS = $(CORE_OBJS) $(PLATFORM_OBJS)
+
+.PHONY: help objects build-release build-debug check-data run clean
+
+# ── Help ─────────────────────────────────────────────────────────────────────
+
+help: ## Print this help message
+	@printf '\033[01;32m${SERVICE}\033[00;37m\n\n'
+	@printf "\033[33mUsage:\033[0m\n  make -f Makefile.macosx [target]\n\n\033[33mTargets:\033[0m\n"
+	@grep -E '^[-a-zA-Z0-9_\.\/]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; \
+		{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+# ── Build ────────────────────────────────────────────────────────────────────
+
+$(BUILDDIR):
+	mkdir -p $(BUILDDIR)
+
+$(BUILDDIR)/%.o: %.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) -o $@ -c $<
+
+objects: CFLAGS = $(RELEASE_CFLAGS)
+objects: $(CORE_OBJS) ## Compile engine core objects only (no platform drivers)
+
+build-release: CFLAGS = $(RELEASE_CFLAGS)
+build-release: $(BUILDDIR)/glquake ## Build optimized glquake (default)
+
+build-debug: CFLAGS = $(DEBUG_CFLAGS)
+build-debug: $(BUILDDIR)/glquake ## Build glquake with -g -O0
+
+$(BUILDDIR)/glquake: $(OBJS)
+	$(CC) -o $@ $(OBJS) $(LDFLAGS)
+
+# ── Data gate & run ──────────────────────────────────────────────────────────
+
+check-data: ## Verify game data (id1/pak0.pak) is present
+	@if [ ! -f "$(GAMEDIR)/id1/pak0.pak" ]; then \
+		echo "ERROR: game data not found."; \
+		echo "Expected: $(GAMEDIR)/id1/pak0.pak"; \
+		echo "Copy pak0.pak (and pak1.pak) from your legally owned Quake"; \
+		echo "into $(GAMEDIR)/id1/ and re-run."; \
+		exit 1; \
+	fi
+	@echo "Game data OK: $(GAMEDIR)/id1"
+
+run: check-data build-release ## Launch glquake against $(GAMEDIR)
+	$(BUILDDIR)/glquake -basedir $(GAMEDIR)
+
+clean: ## Remove build output
+	rm -rf $(BUILDDIR)
+```
+
+Note: switching between `build-release` and `build-debug` without `clean` will not recompile objects (make cannot see flag changes). This matches repo-era practice; do not add dependency tracking for it.
+
+- [ ] **Step 5: Verify help target**
+
+Run: `make -f Makefile.macosx help` (cwd = `WinQuake/`)
+Expected: colored target list containing `help`, `objects`, `build-release`, `build-debug`, `check-data`, `run`, `clean`; exit 0.
+
+- [ ] **Step 6: Verify data gate fails cleanly without paks**
+
+Run: `make -f Makefile.macosx check-data`
+Expected: exit 1, message `ERROR: game data not found.` with the expected path.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add WinQuake/Makefile.macosx WinQuake/macosx-shim .gitignore
+git commit -m "Build scaffold for GLQuake on macOS arm64: Makefile.macosx, GL header shims, data gate"
+```
+
+---
+
+### Task 2: Engine core compile campaign
+
+**Files:**
+- Modify: whichever core `.c/.h` files the compiler rejects (per the recipes below — nothing else)
+- Test: `make -f Makefile.macosx objects` exits 0 with 51 objects in `WinQuake/build-macosx/`
+
+**Interfaces:**
+- Consumes: Task 1's `objects` target and shim includes
+- Produces: all `CORE_OBJS` compiling cleanly under `RELEASE_CFLAGS`; Fixes Ledger entries appended to this plan
+
+Known facts from compile spikes (already true, no action needed): `GL/gl.h`/`GL/glu.h` resolved by Task-1 shims; `LINUX_VERSION` already defined in `quakedef.h:30`; `stricmp` mapped by `-Dstricmp=strcasecmp`; `FNDELAY` exists on macOS; `sys_linux.c` is plain POSIX including `main()`.
+
+- [ ] **Step 1: Run the core compile**
+
+Run: `make -f Makefile.macosx objects` (cwd `WinQuake/`)
+Expected: FAIL — this is the porting campaign input. Read errors file by file.
+
+- [ ] **Step 2: Fix errors using only these recipes**
+
+Apply the minimal matching recipe per error; nothing else without escalating:
+
+| Error class | Recipe |
+|---|---|
+| `'X.h' file not found` for a system header | If the header is Linux-only and the file is being replaced anyway (`snd_linux.c`), ignore — it is not in CORE_OBJS. Otherwise add a shim under `WinQuake/macosx-shim/` and record it. |
+| Implicit function declaration | Add the missing `#include` if the header exists in-tree; else add an `extern` prototype at top of the file. |
+| `cast from pointer to integer of different size` / int↔pointer | Cast via `uintptr_t`/`intptr_t` (`#include <stdint.h>` if needed). |
+| `tentative definition ... duplicate` at link time (not now) | Task 5 decision rule — do not preempt. |
+| `sys_linux.c` needs a Linux-only facility beyond a trivial fix | STOP — escalate. Spec §5.1 fallback is a new `sys_sdl.c` implementing the same `Sys_*` contract; do not start it without user sign-off. |
+| Anything requiring a behavior change | STOP — escalate to the user with file:line and the error text. |
+
+- [ ] **Step 3: Re-run until clean**
+
+Run: `make -f Makefile.macosx objects`
+Expected: exit 0. Then `ls WinQuake/build-macosx/*.o | wc -l` → `51`.
+
+- [ ] **Step 4: Update the Fixes Ledger**
+
+Append every fix to the table in the Fixes Ledger section at the bottom of this plan file (file:line — rationale).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -u WinQuake docs/superpowers/plans/2026-08-29-quake-apple-silicon.md
+git commit -m "Make GLQuake engine core compile on macOS arm64 (clang, C-only, id386=0)"
+```
+
+---
+
+### Task 3: SDL3 sound driver (`snd_sdl.c`)
+
+**Files:**
+- Create: `WinQuake/snd_sdl.c`
+- Test: `make -f Makefile.macosx objects` still exits 0 and `build-macosx/snd_sdl.o` exists (object compiles; full audio verification is Task 5)
+
+**Interfaces:**
+- Consumes: `shm = &sn` with fields `splitbuffer, samplebits, speed, channels, samples, submission_chunk, samplepos, buffer` (see `WinQuake/sound.h` and `snd_linux.c:37-140`); `COM_CheckParm`, `Con_Printf`
+- Produces: the four `SNDDMA_*` functions the engine links against (names must match exactly):
+  - `qboolean SNDDMA_Init(void)`
+  - `int SNDDMA_GetDMAPos(void)` — current playback position in samples
+  - `void SNDDMA_Submit(void)`
+  - `void SNDDMA_Shutdown(void)`
+
+Model: callback-driven SDL3 device. The callback copies from `shm->buffer` (the engine's ring) into the audio stream; `GetDMAPos` reports the callback's consumption position in samples. This mirrors `snd_linux.c`'s mmap model without mmap.
+
+- [ ] **Step 1: Write `WinQuake/snd_sdl.c`**
+
+```c
+/*
+snd_sdl.c — SDL3 audio driver for GLQuake on macOS arm64.
+Replaces snd_linux.c (/dev/dsp + mmap) with an SDL3 callback device.
+Format/parm handling mirrors snd_linux.c:37-140.
+*/
+
+#include <stdlib.h>
+#include <string.h>
+#include <SDL3/SDL.h>
+#include "quakedef.h"
+
+static SDL_AudioDeviceID audio_device;
+static int snd_inited;
+static int read_bytes;	/* bytes the callback has consumed, monotonic */
+
+static void SDLCALL snd_callback(void *userdata, SDL_AudioStream *stream,
+                                 int additional_amount, int total_amount)
+{
+	int bufsize = shm->samples * (shm->samplebits / 8);
+	int chunk = additional_amount;
+
+	while (chunk > 0) {
+		int pos = read_bytes % bufsize;
+		int n = bufsize - pos;
+		if (n > chunk)
+			n = chunk;
+		SDL_PutAudioStreamData(stream, shm->buffer + pos, n);
+		read_bytes += n;
+		chunk -= n;
+	}
+}
+
+qboolean SNDDMA_Init(void)
+{
+	SDL_AudioSpec spec;
+	int i;
+	char *s;
+
+	snd_inited = 0;
+
+	shm = &sn;
+	shm->splitbuffer = 0;
+
+	s = getenv("QUAKE_SOUND_SAMPLEBITS");
+	if (s) shm->samplebits = atoi(s);
+	else if ((i = COM_CheckParm("-sndbits")) != 0)
+		shm->samplebits = atoi(com_argv[i+1]);
+	if (shm->samplebits != 16 && shm->samplebits != 8)
+		shm->samplebits = 16;
+
+	s = getenv("QUAKE_SOUND_SPEED");
+	if (s) shm->speed = atoi(s);
+	else if ((i = COM_CheckParm("-sndspeed")) != 0)
+		shm->speed = atoi(com_argv[i+1]);
+	else
+		shm->speed = 44100;
+
+	s = getenv("QUAKE_SOUND_CHANNELS");
+	if (s) shm->channels = atoi(s);
+	else if ((i = COM_CheckParm("-sndmono")) != 0)
+		shm->channels = 1;
+	else if ((i = COM_CheckParm("-sndstereo")) != 0)
+		shm->channels = 2;
+	else shm->channels = 2;
+
+	shm->samples = shm->speed * shm->channels;	/* 1 second ring */
+	shm->submission_chunk = 1;
+	shm->buffer = (unsigned char *) malloc(shm->samples * (shm->samplebits / 8));
+	if (!shm->buffer) {
+		Con_Printf("Could not allocate sound ring\n");
+		return 0;
+	}
+	memset(shm->buffer, 0, shm->samples * (shm->samplebits / 8));
+
+	memset(&spec, 0, sizeof(spec));
+	spec.freq = shm->speed;
+	spec.channels = shm->channels;
+	spec.format = (shm->samplebits == 16) ? SDL_AUDIO_S16LE : SDL_AUDIO_U8;
+	spec.callback = snd_callback;
+
+	audio_device = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec);
+	if (!audio_device) {
+		Con_Printf("Could not open SDL audio device: %s\n", SDL_GetError());
+		free(shm->buffer);
+		shm->buffer = NULL;
+		return 0;
+	}
+	SDL_ResumeAudioDevice(audio_device);
+
+	read_bytes = 0;
+	shm->samplepos = 0;
+	snd_inited = 1;
+	return 1;
+}
+
+int SNDDMA_GetDMAPos(void)
+{
+	if (!snd_inited)
+		return 0;
+	shm->samplepos = (read_bytes / (shm->samplebits / 8)) % shm->samples;
+	return shm->samplepos;
+}
+
+void SNDDMA_Submit(void)
+{
+	/* callback-driven: nothing to push */
+}
+
+void SNDDMA_Shutdown(void)
+{
+	if (snd_inited) {
+		SDL_CloseAudioDevice(audio_device);
+		free(shm->buffer);
+		shm->buffer = NULL;
+		snd_inited = 0;
+	}
+}
+```
+
+- [ ] **Step 2: Compile**
+
+Run: `make -f Makefile.macosx objects` — note: `snd_sdl.o` is in `PLATFORM_OBJS`, not `CORE_OBJS`, so compile it explicitly first:
+Run: `make -f Makefile.macosx CFLAGS="$(shell pkg-config sdl3 --cflags) -DGLQUAKE -Dstricmp=strcasecmp -I. -Imacosx-shim" build-macosx/snd_sdl.o` — or simply `cc -c $(pkg-config sdl3 --cflags) -DGLQUAKE -Dstricmp=strcasecmp -I. -Imacosx-shim snd_sdl.c -o build-macosx/snd_sdl.o`
+Expected: exit 0, `build-macosx/snd_sdl.o` exists, no warnings about missing prototypes for the four `SNDDMA_*` names.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add WinQuake/snd_sdl.c
+git commit -m "Add SDL3 sound driver (snd_sdl.c) for the macOS arm64 port"
+```
+
+---
+
+### Task 4: SDL3 video/GL/input driver (`gl_vidsdl.c`)
+
+**Files:**
+- Create: `WinQuake/gl_vidsdl.c`
+- Test: object compiles (Task 5 links it and proves the symbol inventory complete)
+
+**Interfaces:**
+- Consumes: engine symbols used by `gl_vidlinuxglx.c` (read that file first — it is the reference implementation for this task): `Key_Event`, `Sys_Quit`, `Cvar_RegisterVariable`, `GL_Init`, `vid` struct (`quakedef.h`), `K_*` key codes (`keys.h`)
+- Produces: the symbol inventory `gl_vidlinuxglx.c` exports. Minimum contract:
+  - `void VID_Init(unsigned char *palette)`
+  - `void VID_Shutdown(void)`
+  - `void VID_SetPalette(unsigned char *palette)`
+  - `void VID_Init8bitPalette(void)`
+  - `void Sys_SendKeyEvents(void)`
+  - `void GL_BeginRendering(int *x, int *y, int *width, int *height)`
+  - `void GL_EndRendering(void)`
+  - plus any cvars/globals the link step reports missing (mirror them from `gl_vidlinuxglx.c`)
+
+Reference map inside `WinQuake/gl_vidlinuxglx.c` (copy structure, swap X11→SDL3):
+- `XLateKey` (keysym → `K_*`) at line 119 → write `XLateSDLKey(SDL_Keycode)` with the same coverage
+- mouse grab/accumulate at lines 277-330, event pump + `Key_Event(K_MOUSE1 + b, ...)` + `mx/my` accumulation at lines 340-430
+- `Sys_SendKeyEvents` at line 910 (including how `mx/my` get published to the engine — copy that publishing mechanism exactly)
+- `VID_Shutdown`:441, `VID_SetPalette`:487, `VID_Init8bitPalette`:641, `VID_Init`:721
+
+- [ ] **Step 1: Write `WinQuake/gl_vidsdl.c`**
+
+Skeleton (complete the bodies by translating the reference file sections above):
+
+```c
+/*
+gl_vidsdl.c — SDL3 video/GL/input driver for GLQuake on macOS arm64.
+Replaces gl_vidlinuxglx.c (X11/GLX). Structure mirrors that file section
+by section; only the windowing calls change.
+*/
+
+#include <SDL3/SDL.h>
+#include "quakedef.h"
+
+static SDL_Window *sdl_window;
+static SDL_GLContext sdl_glctx;
+static qboolean mouse_active;
+static int mx, my;
+
+/* mirror the cvar block gl_vidlinuxglx.c registers in VID_Init */
+
+void VID_Init(unsigned char *palette)
+{
+	int width = 1024, height = 768;
+
+	/* Cvar_RegisterVariable(...) for each cvar the reference registers */
+
+	SDL_InitSubSystem(SDL_INIT_VIDEO);
+	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
+	                    SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+
+	sdl_window = SDL_CreateWindow("GLQuake", width, height, SDL_WINDOW_OPENGL);
+	if (!sdl_window)
+		Sys_Error("SDL_CreateWindow failed: %s", SDL_GetError());
+	sdl_glctx = SDL_GL_CreateContext(sdl_window);
+	if (!sdl_glctx)
+		Sys_Error("SDL_GL_CreateContext failed: %s", SDL_GetError());
+	SDL_GL_MakeCurrent(sdl_window, sdl_glctx);
+	SDL_SetWindowRelativeMouseMode(sdl_window, true);
+	mouse_active = true;
+
+	/* copy the vid-struct field assignments from gl_vidlinuxglx.c VID_Init
+	   (vid.width/height/aspect/numpages etc.), then GL_Init(), then: */
+	VID_SetPalette(palette);
+	VID_Init8bitPalette();
+}
+
+static int XLateSDLKey(SDL_Keycode key)
+{
+	/* same coverage as XLateKey at gl_vidlinuxglx.c:119 — letters, digits,
+	   F-keys, arrows, space/ctrl/shift/alt/escape/tab/tilde, etc. */
+	switch (key) {
+	case SDLK_ESCAPE:	return K_ESCAPE;
+	case SDLK_RETURN:	return K_ENTER;
+	case SDLK_TAB:		return K_TAB;
+	case SDLK_SPACE:	return K_SPACE;
+	case SDLK_BACKSPACE:	return K_BACKSPACE;
+	/* ... complete from the reference table ... */
+	default:
+		if (key >= SDLK_a && key <= SDLK_z)
+			return key - SDLK_a + 'a';
+		if (key >= SDLK_0 && key <= SDLK_9)
+			return key;
+		return key < 256 ? (int)key : 0;
+	}
+}
+
+void Sys_SendKeyEvents(void)
+{
+	SDL_Event ev;
+
+	while (SDL_PollEvent(&ev)) {
+		switch (ev.type) {
+		case SDL_EVENT_KEY_DOWN:
+		case SDL_EVENT_KEY_UP:
+			Key_Event(XLateSDLKey(ev.key.key), ev.key.down);
+			break;
+		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+		case SDL_EVENT_MOUSE_BUTTON_UP:
+			Key_Event(K_MOUSE1 + ev.button.button - SDL_BUTTON_LEFT,
+			          ev.button.down);
+			break;
+		case SDL_EVENT_MOUSE_MOTION:
+			if (mouse_active) {
+				mx += (int)ev.motion.xrel;
+				my += (int)ev.motion.yrel;
+			}
+			break;
+		case SDL_EVENT_QUIT:
+			Sys_Quit();
+			break;
+		}
+	}
+
+	/* publish mouse deltas exactly the way Sys_SendKeyEvents does in
+	   gl_vidlinuxglx.c:910 (assignment to the engine's mouse_x/mouse_y
+	   or equivalent), then: */
+	mx = my = 0;
+}
+
+void VID_Shutdown(void)
+{
+	if (sdl_glctx) { SDL_GL_DestroyContext(sdl_glctx); sdl_glctx = NULL; }
+	if (sdl_window) { SDL_DestroyWindow(sdl_window); sdl_window = NULL; }
+	SDL_QuitSubSystem(SDL_INIT_VIDEO);
+}
+
+/* VID_SetPalette / VID_Init8bitPalette: translate the bodies from
+   gl_vidlinuxglx.c:487 / :641 — they manipulate GL textures/tables and
+   contain no X11 calls beyond what is already abstracted. */
+
+void GL_BeginRendering(int *x, int *y, int *width, int *height)
+{
+	/* gl_screen.c:73 owns glx/gly/glwidth/glheight and passes their
+	   addresses here (gl_screen.c:849) — do not define them in this file */
+	*x = 0;
+	*y = 0;
+	SDL_GetWindowSize(sdl_window, width, height);
+}
+
+void GL_EndRendering(void)
+{
+	SDL_GL_SwapWindow(sdl_window);
+}
+```
+
+- [ ] **Step 2: Compile**
+
+Run: `cc -c $(pkg-config sdl3 --cflags) -DGLQUAKE -Dstricmp=strcasecmp -I. -Imacosx-shim gl_vidsdl.c -o build-macosx/gl_vidsdl.o` (cwd `WinQuake/`)
+Expected: exit 0. Fix any compile errors by consulting the reference file.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add WinQuake/gl_vidsdl.c
+git commit -m "Add SDL3 video/GL/input driver (gl_vidsdl.c) for the macOS arm64 port"
+```
+
+---
+
+### Task 5: Link, launch, Phase-1 acceptance gate
+
+**Files:**
+- Modify: `WinQuake/Makefile.macosx` only if a decision rule below triggers
+- Test: Phase-1 smoke checklist (Spec §9)
+
+**Interfaces:**
+- Consumes: Tasks 1-4 artifacts; user's `game/id1/pak0.pak` (+ `pak1.pak`)
+- Produces: working arm64 `glquake` binary; verified gameplay; finalized Fixes Ledger
+
+- [ ] **Step 1: Full build**
+
+Run: `make -f Makefile.macosx clean && make -f Makefile.macosx build-release`
+Expected: link errors at first. Apply decision rules, one class at a time, re-link after each:
+
+| Link symptom | Action |
+|---|---|
+| `Undefined symbols ... SV_HullPointContents` or other world/math symbols from the omitted asm | Add `$(BUILDDIR)/nonintel.o` to `CORE_OBJS` and a pattern-rule dependency exists already |
+| `duplicate symbol` for globals (classic `common.c` tentative definitions) | Add `-fcommon` to `BASE_CFLAGS` |
+| `Undefined symbols _SNDDMA_*` or `_VID_*` / `_GL_BeginRendering` etc. | Name mismatch in `snd_sdl.c`/`gl_vidsdl.c` — fix the new files, never the engine |
+| Any undefined symbol resolved by an existing repo `.c` file (check `Makefile.linuxi386` object lists first) | Add that object to `CORE_OBJS` |
+| Anything else | Escalate to user with the exact linker output |
+
+- [ ] **Step 2: Verify architecture**
+
+Run: `file build-macosx/glquake`
+Expected: contains `arm64`.
+
+- [ ] **Step 3: Launch without data (binary-executes proof)**
+
+Run: `./build-macosx/glquake -basedir ../game` (with `game/id1/` empty or missing)
+Expected: controlled exit with a `Sys_Error` mentioning pak loading (e.g. `W_LoadWadFile` / `COM_Init` failure) — NOT a crash, segfault, or hang. This proves `main()` → `Host_Init` executes.
+
+- [ ] **Step 4: Data gate**
+
+User copies `pak0.pak` (+ `pak1.pak`) into `game/id1/`.
+Run: `make -f Makefile.macosx check-data`
+Expected: `Game data OK`.
+
+- [ ] **Step 5: Phase-1 smoke checklist**
+
+Run: `make -f Makefile.macosx run` and verify each item, in order:
+
+1. SDL3 window opens (~1024×768); main menu renders.
+2. New Game → episode 1 loads; world renders (textures, light, no black screen).
+3. Movement, jumping; weapon fires with sound.
+4. Enemies animate; taking damage updates the HUD.
+5. Save → quit → load restores position.
+6. Quit exits cleanly (no hang/crash).
+
+If an item fails: capture console output (`glquake` prints to the terminal), diagnose in the new SDL3 files first, engine files only with a ledger entry.
+
+- [ ] **Step 6: Finalize ledger and commit**
+
+Append all Task-5 fixes to the Fixes Ledger, then:
+
+```bash
+git add -u WinQuake docs/superpowers/plans/2026-08-29-quake-apple-silicon.md
+git commit -m "Link and verify GLQuake on macOS arm64 (Phase 1 complete)"
+```
+
+---
+
+### Task 6: QuakeWorld server (`qwsv`)
+
+**Files:**
+- Create: `QW/Makefile.macosx`
+- Modify: `QW/server/*.c` or `QW/client/*.c` only per Task-2 recipes
+- Test: server boots and listens (Spec §9 Phase 2 item 1)
+
+**Interfaces:**
+- Consumes: Task-2 fix recipes; user's paks; in-repo `qw-qc/qwprogs.dat`
+- Produces: `QW/build-macosx/qwsv`; data layout `game/qw/`; the makefile later extended with client targets in Task 7
+
+Object list cloned from `QW/Makefile.Linux` `QWSV_OBJS` (server files from `QW/server/`, shared files from `QW/client/`), built with `-DSERVERONLY`. No SDL, no OpenGL — headless.
+
+- [ ] **Step 1: Stage QW game data**
+
+Run (repo root):
+```bash
+mkdir -p game/qw
+cp qw-qc/qwprogs.dat game/qw/
+cp game/id1/pak0.pak game/id1/pak1.pak game/qw/
+```
+Expected: `game/qw/` holds `qwprogs.dat`, `pak0.pak`, `pak1.pak`.
+
+- [ ] **Step 2: Write `QW/Makefile.macosx`**
+
+Same reference style as Task 1's makefile. Variables: `CC=cc`, `BUILDDIR=build-macosx`, `CLIENT_DIR=client`, `SERVER_DIR=server`, `GAMEDIR ?= $(CURDIR)/../game`, `BASE_CFLAGS=-Wall -Dstricmp=strcasecmp -I$(CLIENT_DIR) -I$(SERVER_DIR)`, `SERVER_CFLAGS=$(BASE_CFLAGS) -DSERVERONLY`, `RELEASE_CFLAGS=$(BASE_CFLAGS) -O2 -ffast-math`, `DEBUG_CFLAGS=$(BASE_CFLAGS) -g -O0`, `LDFLAGS=-lm`.
+
+Server objects (exact `QWSV_OBJS` from `QW/Makefile.Linux`):
+`server/pr_cmds.o server/pr_edict.o server/pr_exec.o server/sv_init.o server/sv_main.o server/sv_nchan.o server/sv_ents.o server/sv_send.o server/sv_move.o server/sv_phys.o server/sv_user.o server/sv_ccmds.o server/world.o server/sys_unix.o server/model.o` — compiled from `$(SERVER_DIR)` with `SERVER_CFLAGS` — and `server/cmd.o server/common.o server/crc.o server/cvar.o server/mathlib.o server/md4.o server/zone.o server/pmove.o server/pmovetst.o server/net_chan.o server/net_udp.o` — compiled from `$(CLIENT_DIR)` with `SERVER_CFLAGS`.
+
+Targets: `help`, `build-server` (`$(BUILDDIR)/qwsv`), `build-client` (added in Task 7), `check-data` (verifies `$(GAMEDIR)/qw/qwprogs.dat` and `$(GAMEDIR)/qw/pak0.pak`), `run-server` (`check-data` + `build-server`, then `$(BUILDDIR)/qwsv -basedir $(GAMEDIR) +gamedir qw`), `clean`.
+
+- [ ] **Step 3: Compile campaign**
+
+Run: `make -f Makefile.macosx build-server` (cwd `QW/`)
+Expected: FAIL first; fix with Task-2 recipes only (same table). QW's `client/common.c` differs from WinQuake's — fixes may not carry over; ledger each one.
+
+- [ ] **Step 4: Boot test**
+
+Run: `make -f Makefile.macosx run-server`
+Expected: `qwsv` loads `qwprogs.dat`, loads a default map (`map start` via server console), prints listening status on UDP 27500, no crash. Type `status` in its console if interactive, then Ctrl-C; clean exit.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add QW/Makefile.macosx
+git add -u QW docs/superpowers/plans/2026-08-29-quake-apple-silicon.md
+git commit -m "Build and boot QuakeWorld server (qwsv) on macOS arm64"
+```
+
+---
+
+### Task 7: QuakeWorld GL client (`glqwcl`) — Phase-2 gate
+
+**Files:**
+- Modify: `QW/Makefile.macosx` (add client targets)
+- Create (conditional): `QW/client/gl_vidsdl.c`, `QW/client/snd_sdl.c` — only if Step 2's decision rule triggers
+- Test: Phase-2 smoke checklist (Spec §9)
+
+**Interfaces:**
+- Consumes: Task-6's makefile and server; Task-4's `gl_vidsdl.c` and Task-3's `snd_sdl.c`
+- Produces: `QW/build-macosx/glqwcl`; localhost client↔server gameplay
+
+Client object list: clone `QWCL_OBJS` from `QW/Makefile.Linux`, with the same asm omission as Phase 1, and the GL variant selection used for `glqwcl.glx` — swap `gl_vidlinux*` objects for the SDL3 layer, `snd_linux` → `snd_sdl`, add `-DGLQUAKE`, link `$(shell pkg-config sdl3 --libs) -framework OpenGL -lm`.
+
+- [ ] **Step 1: Add client targets to `QW/Makefile.macosx`**
+
+Add `build-client` producing `$(BUILDDIR)/glqwcl`, and `run-client` (`check-data` + `build-client`, then `$(BUILDDIR)/glqwcl -basedir $(GAMEDIR) +gamedir qw`).
+
+- [ ] **Step 2: SDL layer reuse decision rule**
+
+First try compiling the Phase-1 drivers directly: add `-I../WinQuake` is NOT allowed (different trees); instead compile `../WinQuake/gl_vidsdl.c` by path into the QW build. If it compiles and links against QW headers, reuse it. If QW headers reject it (different `vid` struct, missing symbols, divergent prototypes), copy the files to `QW/client/gl_vidsdl.c` and `QW/client/snd_sdl.c` and adapt them there. Record which branch was taken in the Fixes Ledger.
+
+- [ ] **Step 3: Compile campaign**
+
+Run: `make -f Makefile.macosx build-client`
+Expected: FAIL first; Task-2 recipes; ledger all fixes.
+
+- [ ] **Step 4: Phase-2 smoke checklist**
+
+Terminal 1: `make -f Makefile.macosx run-server`
+Terminal 2: `make -f Makefile.macosx run-client`, then in the game console: `connect localhost`
+Verify, in order:
+1. Client connects (server logs the join).
+2. Player spawns in the map and moves (server-side position updates).
+3. Weapon fire works.
+4. Clean disconnect and quit on both ends.
+
+- [ ] **Step 5: Finalize and commit**
+
+```bash
+git add -u QW docs/superpowers/plans/2026-08-29-quake-apple-silicon.md
+git commit -m "Build and verify QuakeWorld GL client (glqwcl) on macOS arm64 (Phase 2 complete)"
+```
+
+---
+
+## Fixes Ledger
+
+Append every source fix as: `file:line — one-line rationale`. Entries from Tasks 2, 5, 6, 7 land here.
+
+| Fix | Rationale |
+|---|---|
+| chase.c:24 | Added extern prototype for `SV_RecursiveHullCheck` (implicit function declaration). |
+| gl_draw.c:26 | Added extern prototype for `GL_LoadPicTexture` (implicit function declaration). |
+| gl_draw.c:27 | Added extern prototype for `VID_Is8bit` (implicit function declaration). |
+| gl_model.c:27 | Added extern prototype for `GL_SubdivideSurface` (implicit function declaration). |
+| gl_model.c:28 | Added extern prototype for `GL_MakeAliasModelDisplayLists` (implicit function declaration). |
+| gl_rmain.c:24 | Added extern prototype for `R_LightPoint` (implicit function declaration). |
+| gl_rmain.c:25 | Added extern prototype for `R_DrawBrushModel` (implicit function declaration). |
+| gl_rmain.c:26 | Added extern prototype for `RotatePointAroundVector` (implicit function declaration). |
+| gl_rmain.c:27 | Added extern prototype for `R_AnimateLight` (implicit function declaration). |
+| gl_rmain.c:28 | Added extern prototype for `V_CalcBlend` (implicit function declaration). |
+| gl_rmain.c:29 | Added extern prototype for `R_DrawWorld` (implicit function declaration). |
+| gl_rmain.c:30 | Added extern prototype for `R_RenderDlights` (implicit function declaration). |
+| gl_rmain.c:31 | Added extern prototype for `R_DrawParticles` (implicit function declaration). |
+| gl_rmain.c:32 | Added extern prototype for `R_DrawWaterSurfaces` (implicit function declaration). |
+| gl_rmain.c:33 | Added extern prototype for `R_RenderBrushPoly` (implicit function declaration). |
+| gl_rmisc.c:24 | Added extern prototype for `R_InitParticles` (implicit function declaration). |
+| gl_rmisc.c:25 | Added extern prototype for `R_ClearParticles` (implicit function declaration). |
+| gl_rmisc.c:26 | Added extern prototype for `GL_BuildLightmaps` (implicit function declaration). |
+| gl_rmisc.c:27 | Added extern prototype for `GL_Upload8_EXT` (implicit function declaration). |
+| gl_rmisc.c:28 | Added extern prototype for `VID_Is8bit` (implicit function declaration). |
+| gl_rsurf.c:24 | Added extern prototype for `EmitWaterPolys` (implicit function declaration). |
+| gl_rsurf.c:25 | Added extern prototype for `EmitSkyPolys` (implicit function declaration). |
+| gl_rsurf.c:26 | Added extern prototype for `EmitBothSkyLayers` (implicit function declaration). |
+| gl_rsurf.c:27 | Added extern prototype for `R_DrawSkyChain` (implicit function declaration). |
+| gl_rsurf.c:28 | Added extern prototype for `R_CullBox` (implicit function declaration). |
+| gl_rsurf.c:29 | Added extern prototype for `R_MarkLights` (implicit function declaration). |
+| gl_rsurf.c:30 | Added extern prototype for `R_RotateForEntity` (implicit function declaration). |
+| gl_rsurf.c:31 | Added extern prototype for `R_StoreEfrags` (implicit function declaration). |
+| gl_screen.c:25 | Added extern prototype for `GL_Set2D` (implicit function declaration). |
+| net_udp.c:27 | Added `#include <arpa/inet.h>` for `inet_addr` (implicit function declaration). |
+| QW/server/sv_user.c:39 | Added extern prototype for `SV_FullClientUpdateToClient` (implicit function declaration). |
+| QW/server/sys_unix.c:27 | Added `__APPLE__` to the POSIX-header guard so macOS uses `sys/stat.h`/`unistd.h`/`sys/time.h`/`errno.h` instead of the nonexistent `sys/dir.h`. |
+| QW/client/net_chan.c:26 | Added `#include <unistd.h>` (non-Windows branch) for `getpid`/`getuid` in `Netchan_Init` (implicit function declaration). |
+| **Task 7 — build decision (Step 2)** | **Adapted-copy branch.** Compiling `../WinQuake/gl_vidsdl.c`/`snd_sdl.c` by path would resolve their quoted `#include "quakedef.h"` against `WinQuake/` headers (quoted includes search the source file's directory first), pulling the WinQuake header set into QW translation units. Copied both drivers to `QW/client/` instead; isolation preferred over a compat shim. Cross-tree layouts were verified compatible first (`viddef_t` identical, `cvar_t` same layout, `Key_Event` same signature, QW `usercmd_t` has the same `forwardmove/sidemove/upmove` fields the driver writes), so adaptation stayed near-verbatim. |
+| QW/client/gl_vidsdl.c (new) | Adapted copy of Task-4's SDL3 video/GL/input driver for the QW client; replaces `gl_vidlinuxglx.o` in the `glqwcl.glx` variant. Additions over the Phase-1 driver, all mirroring `gl_vidlinuxglx.c`: `_windowed_mouse` cvar (menu.c links it) and empty `VID_LockBuffer`/`VID_UnlockBuffer` stubs (menu.c `M_Draw` calls them). |
+| QW/client/snd_sdl.c (new) | Adapted copy of Task-3's SDL3 audio driver for the QW client, verbatim body; replaces `snd_linux.o`. |
+| QW/client/gl_vidsdl.c:53 | Defined `_windowed_mouse` cvar and registered it in `VID_Init` (referenced by menu.c `M_AdjustSliders`/`M_Options_Draw`; `gl_vidlinuxglx.c` owns it in the Linux build). |
+| QW/client/gl_vidsdl.c:105 | Added empty `VID_LockBuffer`/`VID_UnlockBuffer` stubs referenced by menu.c `M_Draw` (`gl_vidlinuxglx.c:787-788` provides them in the Linux build). |
+| QW/client/cd_null.c:15 | Added null `CDAudio_Pause` stub referenced by cl_parse.c:1372 (present in WinQuake/cd_null.c, missing here; `cd_linux.c` is Linux-only — `<linux/cdrom.h>` — so `cd_null.c` replaces it as in Phase 1). |
+| WinQuake/macosx-shim/GL/gl.h:9 | Defined `APIENTRY` empty off Windows: Apple's `<OpenGL/gl.h>` lacks it, `QW/client/glquake.h` uses it in function-pointer typedefs, and Mesa supplied it in the original Linux build. Inert for Phase 1 (WinQuake's APIENTRY uses are `#ifdef _WIN32`). |
+| QW/client/glquake.h:243 | Made the SGIS-multitexture typedefs/externs unconditional (were `#ifdef _WIN32` only), matching WinQuake/glquake.h: gl_draw.c's `GL_SelectTexture` callsite is compiled off Linux too (`#ifndef __linux__`). Declarations only; `gl_mtexable` stays false on Apple GL. |
+| QW/client/gl_rsurf.c:280 | Made `qglMTexCoord2fSGIS`/`qglSelectTextureSGIS` definitions unconditional (were `#ifdef _WIN32`), matching WinQuake/gl_rsurf.c, so the gl_draw.c callsite links. |
+| QW/client/gl_draw.c:26 | Added `#define GL_COLOR_INDEX8_EXT 0x80E5` (token absent from Apple's `<OpenGL/gl.h>`; same fix as WinQuake/gl_draw.c:29). |
+| QW/client/cl_main.c:29 | Added `#include <ctype.h>` for `isspace` (implicit function declaration). |
+| QW/client/gl_screen.c:468 | `static lastfps;` → `static int lastfps;` (implicit int is a hard error in modern clang). |
+| QW/client/menu.c:1020 | `M_SinglePlayer_Key (key)` → `M_SinglePlayer_Key (int key)` (K&R parameter with no declaration; matches the file's own ANSI forward declaration at line 67). |
+| QW/client/menu.c:1048 | `M_MultiPlayer_Key (key)` → `M_MultiPlayer_Key (int key)` (same as above; forward declaration at line 70). |
+| WinQuake/sys_linux.c:89 | `Sys_Printf`: `text[1024]`+`vsprintf` → `text[4096]`+`vsnprintf` (matches upstream `MAXPRINTMSG`=4096); removed the post-hoc `strlen` guard, unreachable after truncation. Found at gameplay acceptance: Apple Metal GL reports a ~2.6KB `GL_EXTENSIONS` string, and macOS `-O2` fortifies `vsprintf` into `__vsprintf_chk`, which traps on overflow (SIGTRAP; engine signal handler then exited cleanly) — startup died right after the `GL_VERSION` print. This is the bug id's own `console.c:376` FIXME ("make a buffer size safe vsprintf?") points at. |
+| QW/client/sys_linux.c:107 | Same `Sys_Printf` overflow defect and fix (2048→4096, `vsprintf`→`vsnprintf`) in the QW client; its `GL_Init` prints the same extension string. |
+| WinQuake/snd_sdl.c:49 | `SNDDMA_Init` now calls `SDL_InitSubSystem(SDL_INIT_AUDIO)` first and `SNDDMA_Shutdown` calls the symmetric `SDL_QuitSubSystem`: SDL3 refuses to open an audio device before its subsystem is initialized ("Audio subsystem is not initialized"), and the video driver only initializes `SDL_INIT_VIDEO`. Found at gameplay acceptance; sound init previously failed silently and the game ran mute. |
+| QW/client/snd_sdl.c:55 | Same SDL audio-subsystem init/quit fix in the adapted copy. |
+| WinQuake/gl_vidsdl.c:173, QW/client/gl_vidsdl.c:198 (behavior change, user-requested) | Mouse never locks: removed the two `SDL_SetWindowRelativeMouseMode(sdl_window, true)` call sites (`install_grabs` and `VID_Init`) in both drivers. Pointer capture is never engaged, so the cursor stays free/visible; `uninstall_grabs` still forces relative mode off. Mouse-look accumulation stays wired (gameplay-only), `in_mouse 0` disables it entirely. |
+| WinQuake/sv_main.c:1160 | **64-bit string-offset truncation — root cause of the New Game SIGSEGV.** `ent->v.model = sv.worldmodel->name - pr_strings` subtracts the string-heap base from a `mod_known[]` static-array pointer ~13 GB away; the 64-bit difference overflows the 32-bit `string_t`, so `worldspawn` reading `self.model` did `strcmp(pr_strings + garbage_offset)` on unmapped memory. Fixed by copying the name into the heap: `ED_NewString(sv.worldmodel->name) - pr_strings`. Harmless on 32-bit only because the pointer difference fit a signed `int` and `pr_strings + (name - pr_strings)` round-tripped to `name`. Diagnosed via a hardware watchpoint on the corrupted global. |
+| WinQuake/sv_main.c:1170 | Same truncation bug for `pr_global_struct->mapname = sv.name - pr_strings` (`sv.name` is a global `char[]`, not in the heap). → `ED_NewString(sv.name) - pr_strings`. |
+| WinQuake/pr_cmds.c:934,947,954 | Same truncation bug in `PF_ftos`/`PF_vtos`/`PF_etos`, which returned `pr_string_temp - pr_strings` (`pr_string_temp` is a static `char[128]`). → `ED_NewString(pr_string_temp) - pr_strings`. (`PF_etos` is `#ifdef QUAKE2`, fixed for parity.) |
+| WinQuake/host_cmd.c:939,1311 | Same truncation bug for client `netname` (`host_client->name - pr_strings`, a global array). → `ED_NewString(host_client->name) - pr_strings`. Multiplayer path. QW is unaffected: `QW/server/pr_exec.c` already has a `PR_SetString`/`pr_strtbl` mechanism for out-of-heap strings. |
+
+### Removed dead platform drivers and null drivers
+Commit: 3b80972. Deleted Windows/DOS/Linux/Sun drivers, their x86 asm, and
+unused null drivers from WinQuake/ and QW/; removed winquake.h/resource.h and
+their include lines from live files. cd_null.c (live) kept.
+
+### Removed the software renderer
+Commit: fb2079e. Deleted d_* files, non-GL r_* files, renderer asm, and
+renderer-only headers from WinQuake/ and QW/. Kept r_part.c, nonintel.c (QW),
+anorms.h, anorm_dots.h, d_iface.h, r_local.h, r_shared.h (live include closure).
+
+### Removed IDE/packaging/binary junk and side trees
+Commit: 56bda6e. Deleted IDE projects, .bat/.spec.sh files, icons/images,
+kit/ (with GLQUAKE.EXE/OPENGL32.DLL binaries), data/, docs/, dxsdk/, scitech/,
+gas2masm/, makezip*, qwfwd/, and the duplicate qw-qc/ tree. QW/progs/ kept.
+
+### Pruned platform conditionals from live files
+Commit: 9da59a0. Removed _WIN32/_WINDOWS/id386/DOS regions from 36 live
+files per the rules in the 2026-08-30 cleanup spec; id386 pinned to 0.
+
+### Renamed sys_linux.c to sys_unix.c
+Commit: 1b532eb. WinQuake/ and QW/client/ now match QW/server naming.
+
+### Fixed stale qw-qc path and model.c note in QW/Makefile.macosx
+Commit: 0425c63. check-data now points at QW/progs/qwprogs.dat (the
+qw-qc/ tree was deleted in 56bda6e); reworded the pattern-rule NOTE for
+the client/model.c removal.
+
+### Renamed Makefile.macosx to Makefile; bare make prints help
+Commit: 8c5ed66. Both trees now build with plain `make` (targets
+unchanged); `.DEFAULT_GOAL := help` makes bare `make` print the target
+list instead of building. QW NOTE updated: sys_unix.c now exists in both
+source dirs, so the server-first pattern-rule ordering is load-bearing
+for sys_unix.o. Gate commands are now `cd WinQuake && make clean &&
+make build-release` and `cd QW && make clean && make build-server
+build-client`.
+
+### Simplify pass: removed cleanup residue from live files
+Commit: f56abc8. /simplify review (reuse/efficiency both clean) removed
+what the prune left behind: orphan Texture Object Extension block
+(QW/client/glquake.h), write-only text buffer (cl_pred.c), dead
+`#if WINDED` region (common.c), bare braced blocks and redundant forward
+decls (snd_dma/snd_mix both trees), stale Win32/d_ifacea.h comments,
+double blanks and a dangling paren. Deliberately not touched: id386
+pinned-0 chain (spec-sanctioned), nonintel.c/r_local.h (kept per plan),
+NeXT/__sun__ guards in untouched files, and user-visible "Linux"
+strings (parked as S10).
