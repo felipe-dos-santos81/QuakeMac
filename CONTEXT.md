@@ -25,8 +25,9 @@ reviews should use these names.
   lifecycle), the **input module** (`in_sdl.c` — IN_* interface plus
   the SDL event pump), the **sound driver** (`snd_sdl.c` — SNDDMA_*),
   and the **null CD adapter** (`cd_null.c`); the **platform bootstrap**
-  (`sys_unix.c` — main, clock, the Sys_* family) sits there too, one
-  copy per binary, deliberately separate.
+  (`sys_unix.c` — main, clock, the Sys_* family) sits there too for the
+  two GL clients (qwsv's copy stays in the flat `QuakeWorld/server/`),
+  deliberately separate.
 - **Game data** — `game/id1/` feeds glquake; `game/qw/` feeds
   qwsv/glqwcl; both QuakeWorld binaries mount id1 and qw at startup.
 - **Gates** — the build oracle (`make clean && make build-release

@@ -49,7 +49,7 @@ QUAKE_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 # qwsv (dedicated server): server files compile from QuakeWorld/server/,
 # shared files from QuakeWorld/client/, all with -DSERVERONLY. Headless:
 # no SDL, no OpenGL.
-QW_BASE_CFLAGS           = -Wall -Dstricmp=strcasecmp -I$(QW_CLIENT_DIR) \
+QW_BASE_CFLAGS           = -Wall -Dstricmp=strcasecmp \
                            -I$(QW_CLIENT_DIR)/platform -I$(QW_CLIENT_DIR)/sound \
                            -I$(QW_CLIENT_DIR)/net -I$(QW_CLIENT_DIR)/render \
                            -I$(QW_CLIENT_DIR)/client -I$(QW_CLIENT_DIR)/common \
@@ -112,9 +112,9 @@ QUAKE_OBJS = $(QUAKE_CORE_OBJS) $(QUAKE_PLATFORM_OBJS)
 
 # ── QuakeWorld objects ───────────────────────────────────────────────────────
 # Server objects (Makefile.Linux QWSV_OBJS, verbatim): the first 15 compile
-# from $(QW_SERVER_DIR), the last 11 from $(QW_CLIENT_DIR), all with
-# QW_SERVER_CFLAGS. Objects land in $(QW_BUILDDIR)/server/ as in the Linux
-# build.
+# from $(QW_SERVER_DIR), the last 11 from $(QW_CLIENT_DIR)/common (9) and
+# $(QW_CLIENT_DIR)/net (2), all with QW_SERVER_CFLAGS. Objects land in
+# $(QW_BUILDDIR)/server/ as in the Linux build.
 QW_SERVER_OBJS = \
 	$(QW_BUILDDIR)/server/pr_cmds.o $(QW_BUILDDIR)/server/pr_edict.o \
 	$(QW_BUILDDIR)/server/pr_exec.o $(QW_BUILDDIR)/server/sv_init.o \
@@ -278,9 +278,6 @@ $(QW_BUILDDIR)/qwsv: $(QW_SERVER_OBJS)
 
 # ── glqwcl build ─────────────────────────────────────────────────────────────
 
-$(QW_BUILDDIR)/client:
-	mkdir -p $(QW_BUILDDIR)/client
-
 $(QW_BUILDDIR)/client/platform:
 	mkdir -p $(QW_BUILDDIR)/client/platform
 
@@ -299,7 +296,6 @@ $(QW_BUILDDIR)/client/client:
 $(QW_BUILDDIR)/client/common:
 	mkdir -p $(QW_BUILDDIR)/client/common
 
-# Module rules before the client-root catch-all, as in the glquake section.
 $(QW_BUILDDIR)/client/platform/%.o: $(QW_CLIENT_DIR)/platform/%.c | $(QW_BUILDDIR)/client/platform
 	$(CC) $(CFLAGS) -o $@ -c $<
 
@@ -316,9 +312,6 @@ $(QW_BUILDDIR)/client/client/%.o: $(QW_CLIENT_DIR)/client/%.c | $(QW_BUILDDIR)/c
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 $(QW_BUILDDIR)/client/common/%.o: $(QW_CLIENT_DIR)/common/%.c | $(QW_BUILDDIR)/client/common
-	$(CC) $(CFLAGS) -o $@ -c $<
-
-$(QW_BUILDDIR)/client/%.o: $(QW_CLIENT_DIR)/%.c | $(QW_BUILDDIR)/client
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 build-client: CFLAGS = $(QW_CLIENT_RELEASE_CFLAGS)

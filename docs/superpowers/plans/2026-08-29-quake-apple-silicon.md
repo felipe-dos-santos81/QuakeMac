@@ -951,7 +951,7 @@ header.
 
 ## Module folder restructure: one subfolder per module
 
-Commits: 5edf581..a0940c6 (seven module commits, platform → sound →
+Commits: 5edf581^..a0940c6 (seven module commits, platform → sound →
 net → render → client → server → common). Spec:
 docs/superpowers/specs/2026-08-30-module-folder-restructure-design.md.
 Plan: docs/superpowers/plans/2026-08-30-module-folder-restructure.md.

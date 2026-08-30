@@ -107,10 +107,11 @@ rule follows them into those subdirs (below). `QuakeWorld/server/` itself
 
 **Include paths.** glquake gains seven `-I` flags —
 `-I$(QUAKE_DIR)/{common,client,render,server,net,sound,platform}` — alongside
-the existing root `-I$(QUAKE_DIR)` (kept for `host.c`) and
-`-I$(QUAKE_DIR)/macosx-shim`. `QW_BASE_CFLAGS` gains the six
-`$(QW_CLIENT_DIR)` module dirs; both QW binaries need them because `qwsv`
-compiles the shared sources from there. Zero `#include` lines change.
+the existing root `-I$(QUAKE_DIR)` (kept for `progdefs.q1`/`progdefs.q2`,
+included from `server/progdefs.h`) and `-I$(QUAKE_DIR)/macosx-shim`.
+`QW_BASE_CFLAGS` gains the six `$(QW_CLIENT_DIR)` module dirs; both QW
+binaries need them because `qwsv` compiles the shared sources from there.
+Zero `#include` lines change.
 
 **Pattern rules.** One per module dir, mirroring the existing style, with
 order-only `mkdir -p` prerequisites per module build dir:
