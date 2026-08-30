@@ -274,7 +274,7 @@ def main():
     for path in sorted(files):
         if path.startswith("progs/") and path.endswith(".mdl"):
             flat = path.replace("/", "_").replace(".", "_")
-            if len(files[path]) < 52:
+            if len(files[path]) < 60:  # dims read at offset 48 needs 60 bytes
                 continue
             _, skinwidth, skinheight = struct.unpack_from("<iii",
                                                           files[path], 48)
