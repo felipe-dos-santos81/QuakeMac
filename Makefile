@@ -64,7 +64,8 @@ QW_CLIENT_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 # ── glquake objects ──────────────────────────────────────────────────────────
 # Engine core (Makefile.linuxi386 GLQUAKE_OBJS minus asm objects math/worlda/
 # snd_mixa/sys_dosa; cd_linux→cd_null; snd_linux & gl_vidlinuxglx moved to
-# QUAKE_PLATFORM_OBJS as their SDL3 replacements)
+# QUAKE_PLATFORM_OBJS as their SDL3 replacements, with in_sdl.o split out of
+# gl_vidsdl.c as a separate input module)
 QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/cl_demo.o $(QUAKE_BUILDDIR)/cl_input.o \
 	$(QUAKE_BUILDDIR)/cl_main.o $(QUAKE_BUILDDIR)/cl_parse.o \
@@ -76,8 +77,7 @@ QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/gl_model.o $(QUAKE_BUILDDIR)/gl_refrag.o \
 	$(QUAKE_BUILDDIR)/gl_rlight.o $(QUAKE_BUILDDIR)/gl_rmain.o \
 	$(QUAKE_BUILDDIR)/gl_rmisc.o $(QUAKE_BUILDDIR)/gl_rsurf.o \
-	$(QUAKE_BUILDDIR)/gl_screen.o $(QUAKE_BUILDDIR)/gl_test.o \
-	$(QUAKE_BUILDDIR)/gl_warp.o \
+	$(QUAKE_BUILDDIR)/gl_screen.o $(QUAKE_BUILDDIR)/gl_warp.o \
 	$(QUAKE_BUILDDIR)/host.o $(QUAKE_BUILDDIR)/host_cmd.o \
 	$(QUAKE_BUILDDIR)/keys.o $(QUAKE_BUILDDIR)/menu.o \
 	$(QUAKE_BUILDDIR)/mathlib.o \
@@ -95,7 +95,8 @@ QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/snd_dma.o $(QUAKE_BUILDDIR)/snd_mem.o \
 	$(QUAKE_BUILDDIR)/snd_mix.o
 
-QUAKE_PLATFORM_OBJS = $(QUAKE_BUILDDIR)/gl_vidsdl.o $(QUAKE_BUILDDIR)/snd_sdl.o
+QUAKE_PLATFORM_OBJS = $(QUAKE_BUILDDIR)/gl_vidsdl.o \
+                      $(QUAKE_BUILDDIR)/in_sdl.o $(QUAKE_BUILDDIR)/snd_sdl.o
 
 QUAKE_OBJS = $(QUAKE_CORE_OBJS) $(QUAKE_PLATFORM_OBJS)
 
@@ -128,9 +129,10 @@ QW_SERVER_OBJS = \
 # via DO_GL_CC, plus the glqwcl.glx vid object). Swaps vs the Linux list:
 #   cd_linux -> cd_null (Linux cdrom ioctls have no macOS equivalent; same
 #               replacement as Phase 1), snd_linux -> snd_sdl,
-#   gl_vidlinuxglx -> gl_vidsdl (both new files adapted copies, see their
-#               headers), asm objects math/snd_mixa/sys_dosa omitted (arm64;
-#               nonintel.o covers the !id386 paths as on Linux non-i386).
+#   gl_vidlinuxglx -> gl_vidsdl + in_sdl (adapted copies, see their headers;
+#               in_sdl.c is the input module split out of gl_vidsdl.c),
+#   asm objects math/snd_mixa/sys_dosa omitted (arm64); nonintel.c was
+#   dropped entirely — its !id386 surface-patch stubs had zero call sites.
 # Objects land in $(QW_BUILDDIR)/client/ as in the Linux build
 # ($(BUILDDIR)/glclient/ there).
 QW_CLIENT_OBJS = \
@@ -144,7 +146,6 @@ QW_CLIENT_OBJS = \
 	$(QW_BUILDDIR)/client/keys.o $(QW_BUILDDIR)/client/mathlib.o \
 	$(QW_BUILDDIR)/client/md4.o $(QW_BUILDDIR)/client/menu.o \
 	$(QW_BUILDDIR)/client/net_chan.o $(QW_BUILDDIR)/client/net_udp.o \
-	$(QW_BUILDDIR)/client/nonintel.o \
 	$(QW_BUILDDIR)/client/pmove.o $(QW_BUILDDIR)/client/pmovetst.o \
 	$(QW_BUILDDIR)/client/r_part.o \
 	$(QW_BUILDDIR)/client/sbar.o $(QW_BUILDDIR)/client/skin.o \
@@ -160,7 +161,7 @@ QW_CLIENT_OBJS = \
 	$(QW_BUILDDIR)/client/gl_rmain.o $(QW_BUILDDIR)/client/gl_rmisc.o \
 	$(QW_BUILDDIR)/client/gl_rsurf.o $(QW_BUILDDIR)/client/gl_screen.o \
 	$(QW_BUILDDIR)/client/gl_warp.o \
-	$(QW_BUILDDIR)/client/gl_vidsdl.o
+	$(QW_BUILDDIR)/client/gl_vidsdl.o $(QW_BUILDDIR)/client/in_sdl.o
 
 .DEFAULT_GOAL := help
 

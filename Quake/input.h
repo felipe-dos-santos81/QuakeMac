@@ -29,6 +29,6 @@ void IN_Commands (void);
 void IN_Move (usercmd_t *cmd);
 // add additional movement on top of the keyboard move cmd
 
-void IN_ClearStates (void);
-// restores all button and position states to defaults
+void IN_DeactivateMouse (void);
+// called by VID_Shutdown to release the mouse before the window goes away
 

@@ -272,7 +272,7 @@ void Sys_EditFile(char *filename)
 
 }
 
-double Sys_FloatTime (void)
+double Sys_DoubleTime (void)
 {
     struct timeval tp;
     struct timezone tzp; 
@@ -391,11 +391,11 @@ int main (int c, char **v)
 		printf ("Linux Quake -- Version %0.3f\n", LINUX_VERSION);
 	}
 
-    oldtime = Sys_FloatTime () - 0.1;
+    oldtime = Sys_DoubleTime () - 0.1;
     while (1)
     {
 // find time spent rendering last frame
-        newtime = Sys_FloatTime ();
+        newtime = Sys_DoubleTime ();
         time = newtime - oldtime;
 
         if (cls.state == ca_dedicated)

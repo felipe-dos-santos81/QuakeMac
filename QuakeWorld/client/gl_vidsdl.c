@@ -1,24 +1,23 @@
 /*
-gl_vidsdl.c — SDL3 video/GL/input driver for the QuakeWorld GL client
+gl_vidsdl.c — SDL3 video/GL driver for the QuakeWorld GL client
 (glqwcl) on macOS arm64.
 
-Adapted copy of Quake/gl_vidsdl.c (Task 4) for the QuakeWorld client: the
-body is verbatim except for the additions noted inline (_windowed_mouse
-cvar and the VID_LockBuffer/VID_UnlockBuffer stubs that QuakeWorld's
-menu.c links against, mirroring gl_vidlinuxglx.c). It is copied here — not
-compiled by path from ../Quake — because a quoted #include "quakedef.h"
-resolves relative to the source file's directory; path-compiling would pull
-the Quake header set into this QuakeWorld translation unit (struct/type
-drift risk). Isolated per the plan's decision rule (Task 7, Step 2).
+Adapted copy of Quake/gl_vidsdl.c (Task 4) for the QuakeWorld client:
+the body is verbatim except for the VID_LockBuffer/VID_UnlockBuffer
+stubs that QuakeWorld's menu.c links against (mirroring
+gl_vidlinuxglx.c). Input (IN_*, the SDL event pump, and the
+_windowed_mouse cvar) lives in in_sdl.c; sdl_window is non-static
+because that module needs it. It is copied here — not compiled by
+path from ../Quake — because a quoted #include "quakedef.h" resolves
+relative to the source file's directory; path-compiling would pull
+the Quake header set into this QuakeWorld translation unit
+(struct/type drift risk). Isolated per the plan's decision rule
+(Task 7, Step 2).
 
 Replaces gl_vidlinuxglx.c (X11/GLX/DGA). Structure mirrors that file
 section by section; only the windowing calls change.
 
 SDL3 notes:
-- Event constants are SDL_EVENT_*; ev.key.key is an SDL_Keycode,
-  ev.key.down a bool; ev.motion.xrel/yrel are floats.
-- The reference's XF86DGA mouse and XGrabPointer machinery is replaced
-  wholesale by SDL relative mouse mode (SDL_SetWindowRelativeMouseMode).
 - GL context is a compatibility-profile context on SDL_WINDOW_OPENGL,
   swapped with SDL_GL_SwapWindow.
 */
@@ -38,28 +37,15 @@ SDL3 notes:
 #define WARP_WIDTH              320
 #define WARP_HEIGHT             200
 
-static SDL_Window *sdl_window = NULL;
+SDL_Window *sdl_window = NULL;	/* extern'd by in_sdl.c */
 static SDL_GLContext sdl_glctx = NULL;
 
 static int scr_width, scr_height;
 
-unsigned short	d_8to16table[256];
 unsigned		d_8to24table[256];
 unsigned char	d_15to8table[65536];
 
 cvar_t	vid_mode = {"vid_mode","0",false};
-/* QuakeWorld menu.c (M_AdjustSliders/M_Options_Draw) toggles this; defined
-   by the reference gl_vidlinuxglx.c. Present here so the client links. */
-cvar_t	_windowed_mouse = {"_windowed_mouse","0", true};
-
-static qboolean        mouse_avail;
-static qboolean        mouse_active;
-static int   mx, my;
-static int	old_mouse_x, old_mouse_y;
-
-static cvar_t in_mouse = {"in_mouse", "1", false};
-static cvar_t in_dgamouse = {"in_dgamouse", "1", false};
-static cvar_t m_filter = {"m_filter", "0"};
 
 /*-----------------------------------------------------------------------*/
 
@@ -108,183 +94,6 @@ void VID_LockBuffer(void)
 
 void VID_UnlockBuffer(void)
 {
-}
-
-/*
-===========
-XLateSDLKey
-
-Same coverage as XLateKey in gl_vidlinuxglx.c: letters, digits, F-keys,
-arrows/navigation, keypad, modifiers, escape/tab/tilde, punctuation.
-SDL3 keycodes in the ASCII range already carry the lowercase ASCII value.
-===========
-*/
-static int XLateSDLKey(SDL_Keycode key)
-{
-	switch(key)
-	{
-		case SDLK_PAGEUP:	 return K_PGUP;
-		case SDLK_PAGEDOWN:	 return K_PGDN;
-		case SDLK_HOME:		 return K_HOME;
-		case SDLK_END:		 return K_END;
-		case SDLK_LEFT:		 return K_LEFTARROW;
-		case SDLK_RIGHT:	 return K_RIGHTARROW;
-		case SDLK_DOWN:		 return K_DOWNARROW;
-		case SDLK_UP:		 return K_UPARROW;
-
-		case SDLK_ESCAPE:	 return K_ESCAPE;
-		case SDLK_KP_ENTER:
-		case SDLK_RETURN:	 return K_ENTER;
-		case SDLK_TAB:		 return K_TAB;
-
-		case SDLK_F1:		 return K_F1;
-		case SDLK_F2:		 return K_F2;
-		case SDLK_F3:		 return K_F3;
-		case SDLK_F4:		 return K_F4;
-		case SDLK_F5:		 return K_F5;
-		case SDLK_F6:		 return K_F6;
-		case SDLK_F7:		 return K_F7;
-		case SDLK_F8:		 return K_F8;
-		case SDLK_F9:		 return K_F9;
-		case SDLK_F10:		 return K_F10;
-		case SDLK_F11:		 return K_F11;
-		case SDLK_F12:		 return K_F12;
-
-		case SDLK_BACKSPACE: return K_BACKSPACE;
-		case SDLK_DELETE:	 return K_DEL;
-		case SDLK_PAUSE:	 return K_PAUSE;
-
-		case SDLK_LSHIFT:
-		case SDLK_RSHIFT:	 return K_SHIFT;
-		case SDLK_LCTRL:
-		case SDLK_RCTRL:	 return K_CTRL;
-		case SDLK_LALT:
-		case SDLK_RALT:
-		case SDLK_LGUI:	/* Command on Mac; XK_Meta_* mapped to K_ALT in the reference */
-		case SDLK_RGUI:		 return K_ALT;
-
-		case SDLK_INSERT:	 return K_INS;
-
-		case SDLK_KP_5:		 return '5';
-		case SDLK_KP_0:		 return '0';
-		case SDLK_KP_MULTIPLY: return '*';
-		case SDLK_KP_PLUS:	 return '+';
-		case SDLK_KP_MINUS:	 return '-';
-		case SDLK_KP_DIVIDE: return '/';
-		case SDLK_KP_PERIOD: return '.';
-
-		default:
-			/* keypad digits 1-9 are contiguous in SDL3 */
-			if (key >= SDLK_KP_1 && key <= SDLK_KP_9)
-				return '1' + (key - SDLK_KP_1);
-			/* ASCII-range keycodes: digits, lowercase letters, punctuation */
-			if (key >= 32 && key < 127)
-				return (int)key;
-			break;
-	}
-
-	return 0;
-}
-
-/*
-===========
-install_grabs / uninstall_grabs
-
-SDL relative mouse mode replaces the reference's null-cursor +
-XGrabPointer + XF86DGA direct-video machinery: it hides the cursor and
-reports motion as deltas.
-===========
-*/
-static void install_grabs(void)
-{
-	/* Pointer capture is intentionally never engaged: the mouse must never
-	   lock, so SDL relative mode stays off and the cursor remains free. */
-	mouse_active = true;
-}
-
-static void uninstall_grabs(void)
-{
-	if (!sdl_window)
-		return;
-
-	SDL_SetWindowRelativeMouseMode(sdl_window, false);
-	mouse_active = false;
-}
-
-/*
-===========
-HandleEvents
-
-Pump the SDL event queue, translating key/mouse-button events to
-Key_Event and accumulating relative mouse motion into mx/my, exactly
-as the reference accumulates from MotionNotify (deltas scaled by 2,
-as both its DGA and warp paths did).
-===========
-*/
-static void HandleEvents(void)
-{
-	SDL_Event event;
-	int b;
-
-	if (!sdl_window)
-		return;
-
-	while (SDL_PollEvent(&event)) {
-
-		switch (event.type) {
-		case SDL_EVENT_KEY_DOWN:
-		case SDL_EVENT_KEY_UP:
-			Key_Event(XLateSDLKey(event.key.key), event.key.down);
-			break;
-
-		case SDL_EVENT_MOUSE_MOTION:
-			if (mouse_active) {
-				mx += (int)event.motion.xrel * 2;
-				my += (int)event.motion.yrel * 2;
-			}
-			break;
-
-		case SDL_EVENT_MOUSE_BUTTON_DOWN:
-		case SDL_EVENT_MOUSE_BUTTON_UP:
-			b = -1;
-			if (event.button.button == SDL_BUTTON_LEFT)
-				b = 0;
-			else if (event.button.button == SDL_BUTTON_MIDDLE)
-				b = 2;
-			else if (event.button.button == SDL_BUTTON_RIGHT)
-				b = 1;
-			if (b >= 0)
-				Key_Event(K_MOUSE1 + b, event.button.down);
-			break;
-
-		case SDL_EVENT_QUIT:
-			Sys_Quit();
-			break;
-		}
-	}
-}
-
-static void IN_DeactivateMouse( void )
-{
-	if (!mouse_avail || !sdl_window)
-		return;
-
-	if (mouse_active) {
-		uninstall_grabs();
-		mouse_active = false;
-	}
-}
-
-static void IN_ActivateMouse( void )
-{
-	if (!mouse_avail || !sdl_window)
-		return;
-
-	if (!mouse_active) {
-		mx = my = 0; // don't spazz
-		install_grabs();
-		mouse_active = true;
-	}
 }
 
 void VID_Shutdown(void)
@@ -569,10 +378,6 @@ void VID_Init(unsigned char *palette)
 	int width = 1024, height = 768;
 
 	Cvar_RegisterVariable (&vid_mode);
-	Cvar_RegisterVariable (&_windowed_mouse);
-	Cvar_RegisterVariable (&in_mouse);
-	Cvar_RegisterVariable (&in_dgamouse);
-	Cvar_RegisterVariable (&m_filter);
 	Cvar_RegisterVariable (&gl_ztrick);
 
 	vid.maxwarpwidth = WARP_WIDTH;
@@ -656,102 +461,7 @@ void VID_Init(unsigned char *palette)
 	// Check for 3DFX Extensions and initialize them.
 	VID_Init8bitPalette();
 
-	// the SDL window is ready for play; the mouse is never grabbed
-	mouse_avail = true;
-	mouse_active = true;
-
 	Con_SafePrintf ("Video mode %dx%d initialized.\n", width, height);
 
 	vid.recalc_refdef = 1;				// force a surface cache flush
-}
-
-void Sys_SendKeyEvents(void)
-{
-	HandleEvents();
-}
-
-void Force_CenterView_f (void)
-{
-	cl.viewangles[PITCH] = 0;
-}
-
-void IN_Init(void)
-{
-	/* Note: the reference driver never sets mouse_avail, leaving its mouse
-	   path dead; this driver enables it so relative-mode motion reaches
-	   IN_MouseMove. */
-	mouse_avail = true;
-}
-
-void IN_Shutdown(void)
-{
-}
-
-/*
-===========
-IN_Commands
-===========
-*/
-void IN_Commands (void)
-{
-	if (!sdl_window)
-		return;
-
-	if (key_dest == key_game)
-		IN_ActivateMouse();
-	else
-		IN_DeactivateMouse ();
-}
-
-/*
-===========
-IN_Move
-===========
-*/
-void IN_MouseMove (usercmd_t *cmd)
-{
-	if (!mouse_avail)
-		return;
-
-	if (m_filter.value)
-	{
-		mx = (mx + old_mouse_x) * 0.5;
-		my = (my + old_mouse_y) * 0.5;
-	}
-	old_mouse_x = mx;
-	old_mouse_y = my;
-
-	mx *= sensitivity.value;
-	my *= sensitivity.value;
-
-// add mouse X/Y movement to cmd
-	if ( (in_strafe.state & 1) || (lookstrafe.value && (in_mlook.state & 1) ))
-		cmd->sidemove += m_side.value * mx;
-	else
-		cl.viewangles[YAW] -= m_yaw.value * mx;
-
-	if (in_mlook.state & 1)
-		V_StopPitchDrift ();
-
-	if ( (in_mlook.state & 1) && !(in_strafe.state & 1))
-	{
-		cl.viewangles[PITCH] += m_pitch.value * my;
-		if (cl.viewangles[PITCH] > 80)
-			cl.viewangles[PITCH] = 80;
-		if (cl.viewangles[PITCH] < -70)
-			cl.viewangles[PITCH] = -70;
-	}
-	else
-	{
-		if ((in_strafe.state & 1) && noclip_anglehack)
-			cmd->upmove -= m_forward.value * my;
-		else
-			cmd->forwardmove -= m_forward.value * my;
-	}
-	mx = my = 0;
-}
-
-void IN_Move (usercmd_t *cmd)
-{
-	IN_MouseMove(cmd);
 }
