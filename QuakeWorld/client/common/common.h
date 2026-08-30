@@ -188,6 +188,7 @@ void COM_WriteFile (char *filename, void *data, int len);
 int COM_FOpenFile (char *filename, FILE **file);
 void COM_CloseFile (FILE *h);
 
+byte *COM_LoadFile (char *path, int usehunk);
 byte *COM_LoadStackFile (char *path, void *buffer, int bufsize);
 byte *COM_LoadTempFile (char *path);
 byte *COM_LoadHunkFile (char *path);

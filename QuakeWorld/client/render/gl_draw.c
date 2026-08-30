@@ -31,6 +31,7 @@ extern cvar_t crosshair, cl_crossx, cl_crossy, crosshaircolor;
 cvar_t		gl_nobind = {"gl_nobind", "0"};
 cvar_t		gl_max_size = {"gl_max_size", "1024"};
 cvar_t		gl_picmip = {"gl_picmip", "0"};
+cvar_t		gl_externaltextures = {"gl_externaltextures", "1"};
 
 byte		*draw_chars;				// 8*8 graphic characters
 qpic_t		*draw_disc;
@@ -193,6 +194,19 @@ qpic_t *Draw_PicFromWad (char *name)
 	p = W_GetLumpName (name);
 	gl = (glpic_t *)p->data;
 
+	gl->texnum = GL_TryLoadExternalTexture ("", va ("gfx/%s.tga", name),
+		p->width, p->height, true, false, true);
+	if (gl->texnum)
+	{
+		gl->sl = 0;
+		gl->sh = 1;
+		gl->tl = 0;
+		gl->th = 1;
+		pic_count++;
+		pic_texels += p->width * p->height;
+		return p;
+	}
+
 	// load little ones into the scrap
 	if (p->width < 64 && p->height < 64)
 	{
@@ -267,7 +281,23 @@ qpic_t	*Draw_CachePic (char *path)
 	pic->pic.height = dat->height;
 
 	gl = (glpic_t *)pic->pic.data;
-	gl->texnum = GL_LoadPicTexture (dat);
+	if (!strcmp (path, "gfx/menuplyr.lmp"))
+	{	// runtime shirt/pants translation rewrites this texture;
+		// an override would be clobbered
+		gl->texnum = GL_LoadPicTexture (dat);
+	}
+	else
+	{
+		char	extpath[MAX_QPATH];
+
+		strcpy (extpath, path);
+		if (strlen (extpath) > 4 && !strcmp (extpath + strlen (extpath) - 4, ".lmp"))
+			strcpy (extpath + strlen (extpath) - 4, ".tga");
+		gl->texnum = GL_TryLoadExternalTexture ("", extpath,
+			dat->width, dat->height, true, false, true);
+		if (!gl->texnum)
+			gl->texnum = GL_LoadPicTexture (dat);
+	}
 	gl->sl = 0;
 	gl->sh = 1;
 	gl->tl = 0;
@@ -383,6 +413,7 @@ void Draw_Init (void)
 	Cvar_RegisterVariable (&gl_nobind);
 	Cvar_RegisterVariable (&gl_max_size);
 	Cvar_RegisterVariable (&gl_picmip);
+	Cvar_RegisterVariable (&gl_externaltextures);
 
 	// 3dfx can only handle 256 wide textures
 	if (!Q_strncasecmp ((char *)gl_renderer, "3dfx",4) ||
@@ -401,7 +432,10 @@ void Draw_Init (void)
 			draw_chars[i] = 255;	// proper transparent color
 
 	// now turn them into textures
-	char_texture = GL_LoadTexture ("charset", 128, 128, draw_chars, false, true);
+	char_texture = GL_TryLoadExternalTexture ("charset", "gfx/conchars.tga",
+		128, 128, true, false, true);
+	if (!char_texture)
+		char_texture = GL_LoadTexture ("charset", 128, 128, draw_chars, false, true);
 //	Draw_CrosshairAdjust();
 	cs_texture = GL_LoadTexture ("crosshair", 8, 8, cs_data, false, true);
 
@@ -1355,6 +1389,127 @@ GL_LoadPicTexture
 int GL_LoadPicTexture (qpic_t *pic)
 {
 	return GL_LoadTexture ("", pic->width, pic->height, pic->data, false, true);
+}
+
+/*
+=====================
+GL_TryLoadExternalTexture
+
+Loads a 32-bit RGBA override texture through the normal COM
+filesystem (loose files or paks). Accepts only uncompressed
+bottom-up 24/32-bit TGA whose exact byte length matches the
+header; anything else — absent file, foreign format, truncation,
+dimension-invariant violation — is a soft failure: warn where
+useful and return 0 so the caller keeps its original path.
+Registered under the original dimensions so cache lookups by the
+8-bit path stay coherent.
+=====================
+*/
+int GL_TryLoadExternalTexture (char *identifier, char *path,
+	int orig_w, int orig_h, qboolean exact_size,
+	qboolean mipmap, qboolean alpha)
+{
+	byte		*buf;
+	unsigned	*rgba;
+	gltexture_t	*glt;
+	int			i, x, y, w, h, bpp, channels, len;
+
+	if (!gl_externaltextures.value)
+		return 0;
+
+	if (identifier[0])
+	{
+		for (i = 0, glt = gltextures; i < numgltextures; i++, glt++)
+			if (!strcmp (identifier, glt->identifier))
+				return glt->texnum;
+	}
+
+	if (numgltextures == MAX_GLTEXTURES)
+		return 0;
+
+	buf = COM_LoadFile (path, 0);
+	if (!buf)
+		return 0;
+	len = com_filesize;
+
+	if (len < 18 || buf[1] != 0 || buf[2] != 2 || (buf[17] & 0x20))
+		goto reject;
+	w = buf[12] | (buf[13] << 8);
+	h = buf[14] | (buf[15] << 8);
+	bpp = buf[16];
+	if ((bpp != 24 && bpp != 32) || w < 1 || h < 1)
+		goto reject;
+
+	/* GL_Upload32 rounds up power of two and Sys_Errors past static upload buffer; check ROUNDED product (clamping via picmip/gl_max_size only shrinks afterwards). Also bounds the later w*h products in this function. */
+	for (i = 1; i < w; i <<= 1)
+		;
+	for (x = 1; x < h; x <<= 1)
+		;
+	/* 64-bit: i, x reach 65536 and 32-bit product wraps to 0 */
+	if ((unsigned long long)i * x > 1024u*512u)
+	{
+		Con_Printf ("External %s: %dx%d exceeds upload limit\n", path, w, h);
+		goto reject;
+	}
+
+	if (len != 18 + w * h * (bpp / 8))
+		goto reject;
+
+	if (exact_size)
+	{
+		if (w != orig_w || h != orig_h)
+		{
+			Con_Printf ("External %s: %dx%d, expected %dx%d\n",
+				path, w, h, orig_w, orig_h);
+			goto reject;
+		}
+	}
+	else if ((unsigned long long)w * orig_h != (unsigned long long)h * orig_w)
+	{
+		Con_Printf ("External %s: aspect mismatch (%dx%d vs %dx%d)\n",
+			path, w, h, orig_w, orig_h);
+		goto reject;
+	}
+
+	rgba = malloc (w * h * 4);
+	if (!rgba)
+		goto reject;
+
+	channels = bpp / 8;
+	for (y = 0; y < h; y++)
+	{
+		byte		*src = buf + 18 + (h - 1 - y) * w * channels;
+		unsigned	*dst = rgba + y * w;
+
+		for (x = 0; x < w; x++, src += channels)
+		{
+			unsigned	a = (channels == 4) ? src[3] : 255;
+
+			dst[x] = src[2] | (src[1] << 8) | (src[0] << 16) | (a << 24);
+		}
+	}
+
+	glt = &gltextures[numgltextures];
+	numgltextures++;
+	strcpy (glt->identifier, identifier);
+	glt->texnum = texture_extension_number;
+	glt->width = orig_w;
+	glt->height = orig_h;
+	glt->mipmap = mipmap;
+
+	GL_Bind (texture_extension_number);
+	GL_Upload32 (rgba, w, h, mipmap, alpha);
+	texture_extension_number++;
+
+	Con_Printf ("External texture: %s\n", path);
+
+	free (rgba);
+	Z_Free (buf);
+	return texture_extension_number - 1;
+
+reject:
+	Z_Free (buf);
+	return 0;
 }
 
 /****************************************/
