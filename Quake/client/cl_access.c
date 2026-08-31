@@ -169,7 +169,21 @@ static void Access_ForceLook (char *reason)
 
 void Access_Frame (float frametime)
 {
-	float	step;
+	static float	last_mouseonly = -1;
+	float		step;
+
+	/* kill-switch edge: clear transient gesture/layer/mode state whenever
+	   access_mouseonly is toggled, so nothing stale survives an off->on cycle */
+	if (last_mouseonly != access_mouseonly.value)
+	{
+		last_mouseonly = access_mouseonly.value;
+		gest_pending = false;
+		gest_tap = false;
+		access_layer = false;
+		access_mode = ACCESS_LOOK;
+		access_throttle = 0;
+		access_cruise = false;
+	}
 
 	if (!access_mouseonly.value)
 		return;
