@@ -70,16 +70,14 @@ def palette_from_files(files):
 
 
 def save_png(path, w, h, pixels, palette, transparent_index=None):
+    # Stay indexed: the PNG carries the original Quake palette so edits
+    # can stay on-palette; install.py converts whatever it receives.
     img = Image.frombytes("P", (w, h), pixels)
     img.putpalette(list(palette))
     if transparent_index is not None:
-        img = img.convert("RGBA")
-        img.putalpha(Image.frombytes(
-            "L", (w, h),
-            bytes(0 if p == transparent_index else 255 for p in pixels)))
+        img.save(path, transparency=transparent_index)
     else:
-        img = img.convert("RGB")
-    img.save(path)
+        img.save(path)
 
 
 def parse_miptex(blob, base):

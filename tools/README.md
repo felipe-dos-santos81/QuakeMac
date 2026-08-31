@@ -7,12 +7,16 @@ the engine; the game never reads anything here.
 
 1. `python3 tools/extract.py [gamedir]` — reads `pak*.pak`
    (default `game/id1`), writes every brush texture, gfx.wad pic,
-   model skin, and sprite frame as PNG into `tools/extracted/`,
-   plus `manifest.json` (name, category, original size, override
+   model skin, and sprite frame as 8-bit indexed PNG carrying the
+   original Quake palette (gfx pics and sprite frames keep the
+   engine's transparent index) into `tools/extracted/`, plus
+   `manifest.json` (name, category, original size, override
    path). Output is git-ignored: it derives from commercial game
    data.
-2. Regenerate the PNGs you care about with any image tool. Keep
-   the exact stem name (`wall01.png`, `progs_soldier_mdl_0.png`, ...).
+2. Edit or regenerate the PNGs you care about with any image tool.
+   Keep them indexed to stay on the original 256-color palette;
+   RGB input is accepted too. Keep the exact stem name
+   (`wall01.png`, `progs_soldier_mdl_0.png`, ...).
 3. `python3 tools/install.py <png-or-dir> ...` — validates each
    image against the manifest and writes a TGA override into
    `game/id1/<override_path>`. `--gamedir game/qw` targets the QW
