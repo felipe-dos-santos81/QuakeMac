@@ -70,11 +70,23 @@ static unsigned	gest_tap_time;
 static qboolean	access_layer;
 static double	access_layer_until;
 
+/* transient HUD label */
+static char	access_label[32];
+static double	access_label_until;
+
 static void Access_Log (char *msg)
 {
 	if (access_log.value)
 		Con_Printf ("access: %s\n", msg);
 }
+
+static void Access_Label (char *text)
+{
+	Q_strcpy (access_label, text);
+	access_label_until = realtime + 1.5;
+}
+
+static void Access_Sound (char *name);	/* defined in the input section */
 
 /* ------------------------------------------------------------- commands */
 
@@ -89,7 +101,18 @@ static void Access_ToggleMode_f (void)
 		access_cruise = false;
 		access_lastinput = realtime;
 	}
-	Access_Log (access_mode == ACCESS_WALK ? "walk mode" : "look mode");
+	if (access_mode == ACCESS_WALK)
+	{
+		Access_Log ("walk mode");
+		Access_Label ("WALK MODE");
+		Access_Sound ("misc/menu1.wav");
+	}
+	else
+	{
+		Access_Log ("look mode");
+		Access_Label ("LOOK MODE");
+		Access_Sound ("misc/menu2.wav");
+	}
 }
 
 static void Access_ToggleCruise_f (void)
@@ -99,10 +122,22 @@ static void Access_ToggleCruise_f (void)
 	if (access_mode == ACCESS_WALK)
 	{
 		Access_Log ("cruise refused (walk mode)");
+		Access_Sound ("misc/menu3.wav");
 		return;
 	}
 	access_cruise = !access_cruise;
-	Access_Log (access_cruise ? "cruise on" : "cruise off");
+	if (access_cruise)
+	{
+		Access_Log ("cruise on");
+		Access_Label ("CRUISE ON");
+		Access_Sound ("misc/menu3.wav");
+	}
+	else
+	{
+		Access_Log ("cruise off");
+		Access_Label ("CRUISE OFF");
+		Access_Sound ("misc/menu3.wav");
+	}
 }
 
 /* ------------------------------------------------------------- lifecycle */
@@ -165,6 +200,8 @@ static void Access_ForceLook (char *reason)
 	access_throttle = 0;
 	access_cruise = false;
 	Access_Log (va ("forced look mode (%s)", reason));
+	Access_Label ("LOOK MODE");
+	Access_Sound ("misc/menu2.wav");
 }
 
 void Access_Frame (float frametime)
@@ -262,6 +299,7 @@ static void Access_OpenLayer (void)
 	access_layer = true;
 	access_layer_until = realtime + access_layer_timeout.value;
 	Access_Log ("layer open");
+	Access_Label ("LAYER");
 	Access_Sound ("buttons/switch02.wav");
 }
 
@@ -537,7 +575,44 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 
 void Access_DrawHUD (void)
 {
-	/* Task 7 */
+	char	line[40];
+	int	x, y, w, mid, fill;
+
+	if (!access_mouseonly.value || !access_hud.value)
+		return;
+	if (key_dest != key_game)
+		return;
+
+	x = 8;
+	y = 8;
+
+	Q_strcpy (line, access_mode == ACCESS_WALK ? "WALK" : "LOOK");
+	if (access_cruise)
+		Q_strcpy (line + Q_strlen (line), " CRUISE");
+	Draw_String (x, y, line);
+
+	/* throttle bar */
+	w = 64;
+	y += 10;
+	Draw_Fill (x, y, w, 4, 0);		/* background (palette index 0) */
+	mid = x + w / 2;
+	Draw_Fill (mid, y, 1, 4, 15);		/* center notch */
+	if (access_mode == ACCESS_WALK)
+	{
+		fill = (int)(access_throttle * (w / 2));
+		if (fill > 0)
+			Draw_Fill (mid, y, fill, 4, 12);
+		else if (fill < 0)
+			Draw_Fill (mid + fill, y, -fill, 4, 12);
+	}
+	else if (access_cruise)
+		Draw_Fill (x, y, w, 4, 12);
+
+	/* transient mode label, centered in the 2D space (vid.width may be
+	   640 — never assume 320) */
+	if (access_label[0] && realtime < access_label_until)
+		Draw_String (vid.width / 2 - 4 * Q_strlen (access_label),
+		             vid.height / 2 - 4, access_label);
 }
 
 /* ---------------------------------------------------------- menu seams */
