@@ -53,6 +53,8 @@ cvar_t	access_log = {"access_log", "1", true};
 static int		access_mode = ACCESS_LOOK;
 static float		access_throttle;
 static qboolean		access_cruise;
+static float		tremor_x, tremor_y;	/* low-pass filter state */
+static double		access_lastinput;	/* for the idle timeout (Task 5) */
 
 static void Access_Log (char *msg)
 {
@@ -134,9 +136,22 @@ void Access_Reset (void)
 
 void Access_Frame (float frametime)
 {
+	float	step;
+
 	if (!access_mouseonly.value)
 		return;
-	/* Task 4: pitch easing. Task 5: safety resets. Task 6: gestures. */
+
+	/* Walk mode: pitch stays level — ease toward the horizon */
+	if (access_mode == ACCESS_WALK)
+	{
+		step = 120.0f * frametime;
+		if (cl.viewangles[PITCH] > step)
+			cl.viewangles[PITCH] -= step;
+		else if (cl.viewangles[PITCH] < -step)
+			cl.viewangles[PITCH] += step;
+		else
+			cl.viewangles[PITCH] = 0;
+	}
 }
 
 /* ---------------------------------------------------------------- input */
@@ -153,17 +168,118 @@ void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 	Key_Event (keynum, down);
 }
 
+static float Access_Curve (float v)
+{
+	float	e = access_curve.value;
+
+	if (e == 1 || v == 0)
+		return v;
+	if (v > 0)
+		return powf (v, e);
+	return -powf (-v, e);
+}
+
+static float Access_WalkSpeedCap (void)
+{
+	float	cap = access_walkspeed.value;
+
+	if (cap > cl_forwardspeed.value - 10)
+		cap = cl_forwardspeed.value - 10;
+	if (cap < 0)
+		cap = 0;
+	return cap;
+}
+
 void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 {
-	float	fx, fy;
+	float	fx, fy, v, cap, a;
 
 	if (!access_mouseonly.value)
 		return;
 
-	/* Look mode (and Walk, until Task 4): vanilla mlook semantics */
 	fx = mx * sensitivity.value;
 	fy = my * sensitivity.value;
 
+	/* tremor low-pass */
+	a = access_tremor.value;
+	if (a > 0)
+	{
+		if (a >= 1)
+			a = 0.99f;
+		fx = a * fx + (1 - a) * tremor_x;
+		fy = a * fy + (1 - a) * tremor_y;
+	}
+	tremor_x = fx;
+	tremor_y = fy;
+
+	/* dead zone */
+	if (fabs (fx) < access_deadzone.value)
+		fx = 0;
+	if (fabs (fy) < access_deadzone.value)
+		fy = 0;
+
+	access_lastinput = realtime;
+
+	if (access_mode == ACCESS_WALK)
+	{
+		V_StopPitchDrift ();
+
+	/* X: turn, or sidestep while +strafe is held */
+		if (in_strafe.state & 1)
+		{
+			v = Access_Curve (fx) * m_side.value;
+			if (v > cl_sidespeed.value)
+				v = cl_sidespeed.value;
+			else if (v < -cl_sidespeed.value)
+				v = -cl_sidespeed.value;
+			cmd->sidemove += v;
+		}
+		else
+		{
+			v = fx * m_yaw.value;
+			if (access_turnrate.value > 0)
+			{
+				cap = access_turnrate.value * (float)host_frametime;
+				if (v > cap)
+					v = cap;
+				else if (v < -cap)
+					v = -cap;
+			}
+			cl.viewangles[YAW] -= v;
+		}
+
+	/* Y: movement */
+		cap = Access_WalkSpeedCap ();
+		if (access_move_profile.value == 0)
+		{
+		/* throttle profile: deltas accumulate into a held throttle */
+			access_throttle += fy * access_throttle_gain.value;
+			if (access_throttle > 1)
+				access_throttle = 1;
+			else if (access_throttle < -1)
+				access_throttle = -1;
+			if (access_throttle_decay.value > 0)
+			{
+				access_throttle *= 1.0f - access_throttle_decay.value * (float)host_frametime;
+				if (fabs (access_throttle) < 0.001f)
+					access_throttle = 0;
+			}
+			cmd->forwardmove -= Access_Curve (access_throttle) * cap;
+		}
+		else
+		{
+		/* velocity profile: native m_forward semantics, per-frame */
+			v = Access_Curve (fy * access_velocity_gain.value);
+			if (v > cap)
+				v = cap;
+			else if (v < -cap)
+				v = -cap;
+			cmd->forwardmove -= v;
+		}
+		return;
+	}
+
+	/* Look mode: vanilla mlook semantics */
 	if (in_strafe.state & 1)
 		cmd->sidemove += m_side.value * fx;
 	else
@@ -176,6 +292,19 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 		cl.viewangles[PITCH] = 80;
 	if (cl.viewangles[PITCH] < -70)
 		cl.viewangles[PITCH] = -70;
+
+	/* cruise: constant forward in Look mode */
+	if (access_cruise)
+	{
+		v = (access_cruise_speed.value > 0) ? access_cruise_speed.value
+		                                    : cl_forwardspeed.value;
+		cmd->forwardmove += v;
+		if (cmd->forwardmove < 0)
+		{
+			access_cruise = false;
+			Access_Log ("cruise cancelled (backward input)");
+		}
+	}
 }
 
 /* ----------------------------------------------------------------- HUD */
