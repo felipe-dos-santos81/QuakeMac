@@ -58,6 +58,18 @@ static double		access_lastinput;	/* for the idle timeout (Task 5) */
 static int		access_lasthealth = 100;
 static keydest_t	access_lastdest = key_game;
 
+/* gesture engine */
+static qboolean	gest_down;	/* physical button held */
+static qboolean	gest_pending;	/* a press is held pending */
+static unsigned	gest_down_time;	/* ms timestamp of the pending press */
+static qboolean	gest_tap;	/* released tap waiting out the dbl window */
+static int	gest_tap_key;
+static unsigned	gest_tap_time;
+
+/* sticky layer */
+static qboolean	access_layer;
+static double	access_layer_until;
+
 static void Access_Log (char *msg)
 {
 	if (access_log.value)
@@ -94,6 +106,9 @@ static void Access_ToggleCruise_f (void)
 }
 
 /* ------------------------------------------------------------- lifecycle */
+
+static void Access_OpenLayer (void);	/* defined in the input section */
+static void Access_CloseLayer (void);
 
 void Access_Init (void)
 {
@@ -137,6 +152,9 @@ void Access_Reset (void)
 		access_cruise = false;
 		Access_Log ("reset to look mode");
 	}
+	gest_pending = false;
+	gest_tap = false;
+	Access_CloseLayer ();
 }
 
 static void Access_ForceLook (char *reason)
@@ -187,9 +205,131 @@ void Access_Frame (float frametime)
 	if (access_idle_timeout.value > 0 && access_mode == ACCESS_WALK
 	    && realtime - access_lastinput > access_idle_timeout.value)
 		Access_ForceLook ("idle timeout");
+
+	/* gesture timers */
+	{
+		unsigned	now = (unsigned)SDL_GetTicks ();
+		unsigned	dbl = (unsigned)access_doubleclick_ms.value;
+
+		/* long-press threshold crossed: discard the press, open the layer */
+		if (gest_pending && gest_down
+		    && access_longpress_button.value >= K_MOUSE1
+		    && now - gest_down_time >= (unsigned)access_longpress_ms.value)
+		{
+			gest_pending = false;
+			Access_Log (va ("long-press on %s",
+			                Key_KeynumToString ((int)access_longpress_button.value)));
+			Access_OpenLayer ();
+		}
+
+		/* a tap that survived the double-click window is delivered */
+		if (gest_tap && now - gest_tap_time > dbl)
+		{
+			gest_tap = false;
+			Key_Event (gest_tap_key, true);
+			Key_Event (gest_tap_key, false);
+		}
+
+		if (access_layer && realtime > access_layer_until)
+			Access_CloseLayer ();
+	}
 }
 
 /* ---------------------------------------------------------------- input */
+
+static void Access_Sound (char *name)
+{
+	if (access_sounds.value)
+		S_LocalSound (name);
+}
+
+static void Access_OpenLayer (void)
+{
+	access_layer = true;
+	access_layer_until = realtime + access_layer_timeout.value;
+	Access_Log ("layer open");
+	Access_Sound ("buttons/switch02.wav");
+}
+
+static void Access_CloseLayer (void)
+{
+	if (!access_layer)
+		return;
+	access_layer = false;
+	Access_Log ("layer closed");
+	Access_Sound ("buttons/switch02.wav");
+}
+
+static qboolean Access_GestureButton (int keynum)
+{
+	static qboolean	warned_fire;
+
+	/* never-on-fire rule: double-click on MOUSE1 is rejected */
+	if (keynum == K_MOUSE1
+	    && keynum == (int)access_doubleclick_button.value)
+	{
+		if (!warned_fire)
+		{
+			Con_Printf ("access: double-click on MOUSE1 (fire) is not allowed; ignoring\n");
+			warned_fire = true;
+		}
+		return false;
+	}
+
+	if (keynum == (int)access_longpress_button.value
+	    && access_longpress_button.value >= K_MOUSE1)
+		return true;
+	if (keynum == (int)access_doubleclick_button.value
+	    && access_doubleclick_button.value >= K_MOUSE1)
+		return true;
+	return false;
+}
+
+static void Access_GestureEvent (int keynum, int down, unsigned int ms)
+{
+	unsigned	dbl = (unsigned)access_doubleclick_ms.value;
+
+	if (down)
+	{
+		gest_down = true;
+		if (gest_tap && keynum == gest_tap_key
+		    && keynum == (int)access_doubleclick_button.value
+		    && ms - gest_tap_time <= dbl)
+		{
+		/* second press inside the window: run the command, eat both */
+			gest_tap = false;
+			gest_pending = false;
+			Access_Log (va ("double-click on %s", Key_KeynumToString (keynum)));
+			if (access_doubleclick_command.string[0])
+				Cbuf_AddText (va ("%s\n", access_doubleclick_command.string));
+			return;
+		}
+		gest_pending = true;
+		gest_down_time = ms;
+		return;
+	}
+
+	/* release */
+	gest_down = false;
+	if (!gest_pending)
+	{
+		Key_Event (keynum, down);	/* release of a consumed press */
+		return;
+	}
+	gest_pending = false;
+	if (keynum == (int)access_doubleclick_button.value
+	    && access_doubleclick_button.value >= K_MOUSE1)
+	{
+		/* hold the tap: a second press may still claim it */
+		gest_tap = true;
+		gest_tap_key = keynum;
+		gest_tap_time = ms;
+		return;
+	}
+	/* plain long-press button, released early: deliver the press */
+	Key_Event (keynum, true);
+	Key_Event (keynum, false);
+}
 
 void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 {
@@ -205,6 +345,34 @@ void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 	if (down && keynum == (int)access_toggle_button.value)
 	{
 		Access_ToggleMode_f ();
+		return;
+	}
+
+	/* sticky layer: next M1/M2 click runs the layer commands */
+	if (access_layer)
+	{
+		if (down)
+		{
+			if (keynum == K_MOUSE1)
+			{
+				Access_CloseLayer ();
+				Cbuf_AddText (va ("%s\n", access_layer_cmd1.string));
+				return;
+			}
+			if (keynum == K_MOUSE2)
+			{
+				Access_CloseLayer ();
+				Cbuf_AddText (va ("%s\n", access_layer_cmd2.string));
+				return;
+			}
+		}
+		Key_Event (keynum, down);
+		return;
+	}
+
+	if (Access_GestureButton (keynum))
+	{
+		Access_GestureEvent (keynum, down, ms);
 		return;
 	}
 
