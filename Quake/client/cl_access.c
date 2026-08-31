@@ -87,7 +87,8 @@ typedef struct {
 static access_menuitem_t	menu_items[ACCESS_MAX_MENU_ITEMS];
 static int	menu_numitems;
 static int	menu_hover = -1;
-static float	menu_cx, menu_cy;	/* cursor in 320x200 space */
+static float	menu_cx, menu_cy;	/* cursor in vid.width x vid.height space,
+	                                   with the 320-based menu x-offset applied */
 
 /* synthesized key, dispatched at the next frame boundary */
 static int	menu_queued_key;
@@ -245,10 +246,23 @@ void Access_Frame (float frametime)
 		access_mode = ACCESS_LOOK;
 		access_throttle = 0;
 		access_cruise = false;
+		menu_click_pending = false;
+		menu_click_live = false;
+		menu_queued_key = 0;
+		menu_queued_cursor = NULL;
 	}
 
 	if (!access_mouseonly.value)
 		return;
+
+	/* a closed menu cannot leave a live click or queued key behind */
+	if (key_dest != key_menu)
+	{
+		menu_click_pending = false;
+		menu_click_live = false;
+		menu_queued_key = 0;
+		menu_queued_cursor = NULL;
+	}
 
 	/* Walk mode: pitch stays level — ease toward the horizon */
 	if (access_mode == ACCESS_WALK)
@@ -446,6 +460,8 @@ void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 	{
 		if (M_BindGrabActive ())
 			Key_Event (keynum, down);	/* rebinding flow needs raw keys */
+		else if (!down)
+			Key_Event (keynum, false);	/* releases must clear keydown[] */
 		else
 			Access_MenuButton (keynum, down);
 		return;
@@ -621,7 +637,7 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 		v = (access_cruise_speed.value > 0) ? access_cruise_speed.value
 		                                    : cl_forwardspeed.value;
 		cmd->forwardmove += v;
-		if (cmd->forwardmove < 0)
+		if (cmd->forwardmove <= 0)
 		{
 			access_cruise = false;
 			Access_Log ("cruise cancelled (backward input)");

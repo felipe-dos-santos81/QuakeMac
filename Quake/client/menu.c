@@ -3544,10 +3544,13 @@ void M_Draw (void)
 
 void M_Keydown (int key)
 {
-	if (key == K_MWHEELUP)
-		key = K_UPARROW;
-	else if (key == K_MWHEELDOWN)
-		key = K_DOWNARROW;
+	if (!M_BindGrabActive ())
+	{
+		if (key == K_MWHEELUP)
+			key = K_UPARROW;
+		else if (key == K_MWHEELDOWN)
+			key = K_DOWNARROW;
+	}
 
 	switch (m_state)
 	{
