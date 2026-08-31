@@ -55,6 +55,8 @@ static float		access_throttle;
 static qboolean		access_cruise;
 static float		tremor_x, tremor_y;	/* low-pass filter state */
 static double		access_lastinput;	/* for the idle timeout (Task 5) */
+static int		access_lasthealth = 100;
+static keydest_t	access_lastdest = key_game;
 
 static void Access_Log (char *msg)
 {
@@ -134,6 +136,16 @@ void Access_Reset (void)
 	}
 }
 
+static void Access_ForceLook (char *reason)
+{
+	if (access_mode == ACCESS_LOOK && !access_cruise)
+		return;
+	access_mode = ACCESS_LOOK;
+	access_throttle = 0;
+	access_cruise = false;
+	Access_Log (va ("forced look mode (%s)", reason));
+}
+
 void Access_Frame (float frametime)
 {
 	float	step;
@@ -152,6 +164,26 @@ void Access_Frame (float frametime)
 		else
 			cl.viewangles[PITCH] = 0;
 	}
+
+	/* safety: death */
+	if (cls.state == ca_connected)
+	{
+		if (cl.stats[STAT_HEALTH] <= 0 && access_lasthealth > 0)
+			Access_ForceLook ("death");
+		access_lasthealth = cl.stats[STAT_HEALTH];
+	}
+	else
+		access_lasthealth = 100;
+
+	/* safety: menu or console opened */
+	if (key_dest != key_game && access_lastdest == key_game)
+		Access_ForceLook ("menu/console");
+	access_lastdest = key_dest;
+
+	/* optional inactivity timeout (default off) */
+	if (access_idle_timeout.value > 0 && access_mode == ACCESS_WALK
+	    && realtime - access_lastinput > access_idle_timeout.value)
+		Access_ForceLook ("idle timeout");
 }
 
 /* ---------------------------------------------------------------- input */
@@ -163,8 +195,16 @@ void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 		Key_Event (keynum, down);
 		return;
 	}
-	/* Task 5 consumes the toggle button; Task 6 adds gestures;
-	   Task 8 intercepts menu-mode clicks. */
+
+	access_lastinput = realtime;
+
+	/* dedicated toggle button: engine-consumed, no binding honored */
+	if (down && keynum == (int)access_toggle_button.value)
+	{
+		Access_ToggleMode_f ();
+		return;
+	}
+
 	Key_Event (keynum, down);
 }
 
