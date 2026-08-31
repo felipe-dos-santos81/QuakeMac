@@ -73,7 +73,10 @@ static void Access_ToggleMode_f (void)
 	access_mode = (access_mode == ACCESS_LOOK) ? ACCESS_WALK : ACCESS_LOOK;
 	access_throttle = 0;
 	if (access_mode == ACCESS_WALK)
+	{
 		access_cruise = false;
+		access_lastinput = realtime;
+	}
 	Access_Log (access_mode == ACCESS_WALK ? "walk mode" : "look mode");
 }
 
@@ -258,7 +261,8 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 	if (fabs (fy) < access_deadzone.value)
 		fy = 0;
 
-	access_lastinput = realtime;
+	if (mx || my)
+		access_lastinput = realtime;
 
 	if (access_mode == ACCESS_WALK)
 	{
