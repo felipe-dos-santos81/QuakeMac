@@ -1839,13 +1839,17 @@ void M_Mouse_Draw (void)
 	M_Print (16, y0 + 8*20, "          Max FPS");
 	M_DrawSlider (220, y0 + 8*20, Mouse_SliderRange (20, 0));
 
-	/* registration for point-and-click. Label area (x 16..212) is the
-	   item — click = Enter = default action. Rows with a control at
-	   x=220 additionally get left/right adjust zones; rects never
-	   overlap, so one click fires exactly one action. */
+	/* registration for point-and-click. Label area is the item —
+	   click = Enter = default action. Rows with a control at x=220
+	   additionally get left/right adjust zones; the effective (padded)
+	   rects never overlap, so one click fires exactly one action. */
 	for (i = 0; i < MOUSE_ITEMS; i++)
 	{
-		Access_MenuItem (i, 16, y0 + 8*i, 196, 8, &mouse_cursor);
+		/* width/height chosen so the seam's +2px hit padding makes the
+		   effective rect end exactly at x=212 (slider zones start there)
+		   and adjacent rows' padded rects merely touch — one click, one
+		   action */
+		Access_MenuItem (i, 16, y0 + 8*i, 194, 4, &mouse_cursor);
 		if (i >= 2 && i != 13 && i != 14)
 		{
 			if (Access_ClickRect (212, y0 + 8*i, 52, 8))
