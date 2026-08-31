@@ -995,3 +995,25 @@ sprite frames (gl_model.c), pics (Draw_PicFromWad/Draw_CachePic/
 charset). Exclusions: sky*, progs/player.mdl skins, gfx/menuplyr.
 Tools: tools/extract.py (pak/BSP/WAD2/MDL/SPR -> PNG + manifest),
 tools/install.py (PNG -> validated TGA under game/id1/).
+
+### Mouse-only control (feature)
+Commits: 4740530, b3c1631, 07210cf, 55f0e16, 023ee8f, 71e2c34,
+fe6990e, c6e479b, 9d599f0, 9d6c365, 2d06697, c065e12, aa2fa25,
+112b069. Spec:
+docs/superpowers/specs/2026-08-30-mouse-only-control-design.md. Plan:
+docs/superpowers/plans/2026-08-30-mouse-only-control.md.
+New module Quake/client/cl_access.c (Look/Walk modes, throttle +
+velocity profiles with dead zone/response curve/tremor filter/turn
+cap, cruise control, gesture engine with long-press sticky layer and
+double-click, safety resets on death/menu/disconnect/idle, HUD
+indicator with throttle bar, transition sounds from pak0). Seams:
+in_sdl.c (MOUSE4/5 + wheel + button routing + IN_MouseMove branch),
+keys.h/keys.c (K_MOUSE4/5 203/204, replacing orphaned K_JOY1/2),
+host.c (host_maxfps/host_timescale + Access_Frame), cl_main.c
+(Access_Init/Access_Reset), gl_screen.c (Access_DrawHUD), menu.c
+(point-and-click all pages, setup name palette, new m_mouse options
+page). Kill switch: access_mouseonly. Config:
+configs/autoexec-mouseonly.cfg. QuakeWorld untouched.
+Validation: pending manual session (kill-switch parity +
+mouse-only functional loop) and tester sessions (E1M1 protocol,
+plan Task 12 Step 5).
