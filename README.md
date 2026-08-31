@@ -90,7 +90,8 @@ extraction pipeline.
 ```sh
 pip install Pillow                       # one-time
 make export-textures                     # → tools/extracted/ + manifest.json
-# edit PNGs in tools/extracted/ with any image tool (keep stem names)
+# edit the indexed PNGs (original Quake palette) with any image tool
+# (keep stem names; stay indexed to stay on-palette)
 python3 tools/install.py <png-or-dir>    # validates + writes TGA to game/id1/
 ```
 

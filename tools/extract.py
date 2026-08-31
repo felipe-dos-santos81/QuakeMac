@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract Quake textures from pak files to PNG + manifest.json.
+"""Extract Quake textures from pak files to indexed PNG + manifest.json.
 
 Usage: python3 tools/extract.py [gamedir]     (default: game/id1)
 Output: tools/extracted/{textures,gfx,models,sprites}/, manifest.json

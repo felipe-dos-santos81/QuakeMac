@@ -360,7 +360,7 @@ run-client: check-data-qw build-client ## Launch glqwcl against $(GAMEDIR)/qw
 
 # ── Tools (decoupled, Pillow-only; see tools/README.md) ─────────────────────
 
-export-textures: ## Extract game textures from $(GAMEDIR)/id1 to tools/extracted/
+export-textures: ## Extract game textures from $(GAMEDIR)/id1 to tools/extracted/ (indexed PNGs)
 	python3 tools/extract.py "$(GAMEDIR)/id1"
 
 clean: ## Remove build output
