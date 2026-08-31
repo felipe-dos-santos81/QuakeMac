@@ -18,6 +18,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 #include "quakedef.h"
+#include "cl_access.h"
 
 void (*vid_menudrawfn)(void);
 void (*vid_menukeyfn)(int key);
@@ -288,11 +289,17 @@ void M_Main_Draw (void)
 {
 	int		f;
 	qpic_t	*p;
+	qpic_t	*items;
+	int		i;
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
 	p = Draw_CachePic ("gfx/ttl_main.lmp");
 	M_DrawPic ( (320-p->width)/2, 4, p);
-	M_DrawTransPic (72, 32, Draw_CachePic ("gfx/mainmenu.lmp") );
+	items = Draw_CachePic ("gfx/mainmenu.lmp");
+	M_DrawTransPic (72, 32, items);
+
+	for (i = 0; i < MAIN_ITEMS; i++)
+		Access_MenuItem (i, 72, 32 + i * 20, items->width, 20, &m_main_cursor);
 
 	f = (int)(host_time * 10)%6;
 
@@ -371,11 +378,17 @@ void M_SinglePlayer_Draw (void)
 {
 	int		f;
 	qpic_t	*p;
+	qpic_t	*items;
+	int		i;
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
 	p = Draw_CachePic ("gfx/ttl_sgl.lmp");
 	M_DrawPic ( (320-p->width)/2, 4, p);
-	M_DrawTransPic (72, 32, Draw_CachePic ("gfx/sp_menu.lmp") );
+	items = Draw_CachePic ("gfx/sp_menu.lmp");
+	M_DrawTransPic (72, 32, items);
+
+	for (i = 0; i < SINGLEPLAYER_ITEMS; i++)
+		Access_MenuItem (i, 72, 32 + i * 20, items->width, 20, &m_singleplayer_cursor);
 
 	f = (int)(host_time * 10)%6;
 
@@ -500,7 +513,11 @@ void M_Load_Draw (void)
 	M_DrawPic ( (320-p->width)/2, 4, p);
 
 	for (i=0 ; i< MAX_SAVEGAMES; i++)
+	{
 		M_Print (16, 32 + 8*i, m_filenames[i]);
+		Access_MenuItem (i, 16, 32 + 8*i,
+		                 SAVEGAME_COMMENT_LENGTH * 8, 8, &load_cursor);
+	}
 
 // line cursor
 	M_DrawCharacter (8, 32 + load_cursor*8, 12+((int)(realtime*4)&1));
@@ -516,7 +533,11 @@ void M_Save_Draw (void)
 	M_DrawPic ( (320-p->width)/2, 4, p);
 
 	for (i=0 ; i<MAX_SAVEGAMES ; i++)
+	{
 		M_Print (16, 32 + 8*i, m_filenames[i]);
+		Access_MenuItem (i, 16, 32 + 8*i,
+		                 SAVEGAME_COMMENT_LENGTH * 8, 8, &load_cursor);
+	}
 
 // line cursor
 	M_DrawCharacter (8, 32 + load_cursor*8, 12+((int)(realtime*4)&1));
@@ -1152,39 +1173,51 @@ void M_Options_Draw (void)
 	M_DrawPic ( (320-p->width)/2, 4, p);
 
 	M_Print (16, 32, "    Customize controls");
+	Access_MenuItem (0, 16, 32, 8 * (int)strlen ("    Customize controls"), 8, &options_cursor);
 	M_Print (16, 40, "         Go to console");
+	Access_MenuItem (1, 16, 40, 8 * (int)strlen ("         Go to console"), 8, &options_cursor);
 	M_Print (16, 48, "     Reset to defaults");
+	Access_MenuItem (2, 16, 48, 8 * (int)strlen ("     Reset to defaults"), 8, &options_cursor);
 
 	M_Print (16, 56, "           Screen size");
+	Access_MenuItem (3, 16, 56, 8 * (int)strlen ("           Screen size"), 8, &options_cursor);
 	r = (scr_viewsize.value - 30) / (120 - 30);
 	M_DrawSlider (220, 56, r);
 
 	M_Print (16, 64, "            Brightness");
+	Access_MenuItem (4, 16, 64, 8 * (int)strlen ("            Brightness"), 8, &options_cursor);
 	r = (1.0 - v_gamma.value) / 0.5;
 	M_DrawSlider (220, 64, r);
 
 	M_Print (16, 72, "           Mouse Speed");
+	Access_MenuItem (5, 16, 72, 8 * (int)strlen ("           Mouse Speed"), 8, &options_cursor);
 	r = (sensitivity.value - 1)/10;
 	M_DrawSlider (220, 72, r);
 
 	M_Print (16, 80, "       CD Music Volume");
+	Access_MenuItem (6, 16, 80, 8 * (int)strlen ("       CD Music Volume"), 8, &options_cursor);
 	r = bgmvolume.value;
 	M_DrawSlider (220, 80, r);
 
 	M_Print (16, 88, "          Sound Volume");
+	Access_MenuItem (7, 16, 88, 8 * (int)strlen ("          Sound Volume"), 8, &options_cursor);
 	r = volume.value;
 	M_DrawSlider (220, 88, r);
 
 	M_Print (16, 96,  "            Always Run");
+	Access_MenuItem (8, 16, 96, 8 * (int)strlen ("            Always Run"), 8, &options_cursor);
 	M_DrawCheckbox (220, 96, cl_forwardspeed.value > 200);
 
 	M_Print (16, 104, "          Invert Mouse");
+	Access_MenuItem (9, 16, 104, 8 * (int)strlen ("          Invert Mouse"), 8, &options_cursor);
 	M_DrawCheckbox (220, 104, m_pitch.value < 0);
 
 	M_Print (16, 112, "            Lookspring");
+	Access_MenuItem (10, 16, 112, 8 * (int)strlen ("            Lookspring"), 8, &options_cursor);
 	M_DrawCheckbox (220, 112, lookspring.value);
 
 	M_Print (16, 120, "            Lookstrafe");
+	Access_MenuItem (11, 16, 120, 8 * (int)strlen ("            Lookstrafe"), 8, &options_cursor);
 	M_DrawCheckbox (220, 120, lookstrafe.value);
 
 	if (vid_menudrawfn)
@@ -1287,6 +1320,11 @@ char *bindnames[][2] =
 
 int		keys_cursor;
 int		bind_grab;
+
+int M_BindGrabActive (void)
+{
+	return m_state == m_keys && bind_grab;
+}
 
 void M_Menu_Keys_f (void)
 {
@@ -2945,6 +2983,8 @@ void M_Draw (void)
 	if (m_state == m_none || key_dest != key_menu)
 		return;
 
+	Access_MenuFrame ();
+
 	if (!m_recursiveDraw)
 	{
 		scr_copyeverything = 1;
@@ -3058,6 +3098,11 @@ void M_Draw (void)
 
 void M_Keydown (int key)
 {
+	if (key == K_MWHEELUP)
+		key = K_UPARROW;
+	else if (key == K_MWHEELDOWN)
+		key = K_DOWNARROW;
+
 	switch (m_state)
 	{
 	case m_none:

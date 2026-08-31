@@ -74,6 +74,31 @@ static double	access_layer_until;
 static char	access_label[32];
 static double	access_label_until;
 
+/* -------------------------------------------------- menu pointer state */
+
+#define ACCESS_MAX_MENU_ITEMS 64
+
+typedef struct {
+	int	index;
+	int	x, y, w, h;
+	int	*cursor;
+} access_menuitem_t;
+
+static access_menuitem_t	menu_items[ACCESS_MAX_MENU_ITEMS];
+static int	menu_numitems;
+static int	menu_hover = -1;
+static float	menu_cx, menu_cy;	/* cursor in 320x200 space */
+
+/* synthesized key, dispatched at the next frame boundary */
+static int	menu_queued_key;
+static int	*menu_queued_cursor;
+static int	menu_queued_index;
+
+/* one click lives for exactly one draw pass */
+static qboolean	menu_click_pending;	/* set by the event pump */
+static qboolean	menu_click_live;	/* set by Access_MenuFrame */
+static float	menu_click_x, menu_click_y;
+
 static void Access_Log (char *msg)
 {
 	if (access_log.value)
@@ -383,6 +408,29 @@ static void Access_GestureEvent (int keynum, int down, unsigned int ms)
 	Key_Event (keynum, false);
 }
 
+static void Access_MenuButton (int keynum, int down)
+{
+	if (!down)
+		return;
+	if (keynum == K_MOUSE1)
+	{
+		menu_click_pending = true;
+		menu_click_x = menu_cx;
+		menu_click_y = menu_cy;
+		if (menu_hover >= 0)
+		{
+			menu_queued_key = K_ENTER;
+			menu_queued_cursor = menu_items[menu_hover].cursor;
+			menu_queued_index = menu_items[menu_hover].index;
+		}
+	}
+	else if (keynum == K_MOUSE2)
+	{
+		menu_queued_key = K_ESCAPE;
+		menu_queued_cursor = NULL;
+	}
+}
+
 void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 {
 	if (!access_mouseonly.value)
@@ -392,6 +440,16 @@ void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 	}
 
 	access_lastinput = realtime;
+
+	/* menus: point-and-click; buttons never fire gameplay bindings here */
+	if (key_dest == key_menu)
+	{
+		if (M_BindGrabActive ())
+			Key_Event (keynum, down);	/* rebinding flow needs raw keys */
+		else
+			Access_MenuButton (keynum, down);
+		return;
+	}
 
 	/* dedicated toggle button: engine-consumed, no binding honored */
 	if (down && keynum == (int)access_toggle_button.value)
@@ -619,23 +677,83 @@ void Access_DrawHUD (void)
 
 void Access_MenuFrame (void)
 {
-	/* Task 8 */
+	float	mx, my;
+	int	ww, wh;
+
+	if (!access_mouseonly.value)
+		return;
+
+	menu_numitems = 0;
+	menu_hover = -1;
+	menu_click_live = menu_click_pending;
+	menu_click_pending = false;
+
+	if (key_dest != key_menu)
+		return;
+
+	SDL_GetMouseState (&mx, &my);
+	SDL_GetWindowSize (sdl_window, &ww, &wh);
+	if (ww <= 0 || wh <= 0)
+		return;
+	/* GL_Set2D (gl_draw.c:875) makes the 2D ortho space vid.width x
+	   vid.height (640x480 by default, gl_vidsdl.c:391). menu.c M_Draw*
+	   helpers render at x + ((vid.width-320)>>1) (menu.c:110); bring
+	   the cursor into that same 320-based menu coordinate space so the
+	   registered rects (raw M_Print coordinates) line up with drawn
+	   items */
+	menu_cx = mx * (float)vid.width / ww - ((vid.width - 320) >> 1);
+	menu_cy = my * (float)vid.height / wh;
+
+	/* dispatch last frame's queued action before this frame draws */
+	if (menu_queued_key)
+	{
+		if (menu_queued_cursor)
+			*menu_queued_cursor = menu_queued_index;
+		Key_Event (menu_queued_key, true);
+		Key_Event (menu_queued_key, false);
+		menu_queued_key = 0;
+		menu_queued_cursor = NULL;
+	}
 }
 
 int Access_MenuItem (int index, int x, int y, int w, int h, int *cursor)
 {
-	(void)index; (void)x; (void)y; (void)w; (void)h; (void)cursor;
+	access_menuitem_t	*it;
+
+	if (!access_mouseonly.value || key_dest != key_menu)
+		return 0;
+	if (menu_numitems >= ACCESS_MAX_MENU_ITEMS)
+		return 0;
+
+	it = &menu_items[menu_numitems++];
+	it->index = index;
+	it->x = x - 2;			/* 2 px hit padding */
+	it->y = y - 2;
+	it->w = w + 4;
+	it->h = h + 4;
+	it->cursor = cursor;
+
+	if (menu_cx >= it->x && menu_cx < it->x + it->w
+	    && menu_cy >= it->y && menu_cy < it->y + it->h)
+		menu_hover = menu_numitems - 1;
+
 	return 0;
 }
 
 int Access_MenuHovered (int index)
 {
-	(void)index;
-	return 0;
+	return menu_hover >= 0 && menu_items[menu_hover].index == index;
 }
 
 int Access_ClickRect (int x, int y, int w, int h)
 {
-	(void)x; (void)y; (void)w; (void)h;
+	if (!access_mouseonly.value || !menu_click_live)
+		return 0;
+	if (menu_click_x >= x && menu_click_x < x + w
+	    && menu_click_y >= y && menu_click_y < y + h)
+	{
+		menu_click_live = false;	/* one click, one consumer */
+		return 1;
+	}
 	return 0;
 }
