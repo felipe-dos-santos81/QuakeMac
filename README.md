@@ -102,7 +102,7 @@ data and is never committed.
 Design specs, implementation plans, and the running Fixes Ledger live in
 `docs/superpowers/` (port spec/plan dated 2026-08-29, dead-code cleanup
 dated 2026-08-30, external texture overrides dated 2026-08-30,
-mouse-only control dated 2026-08-30).
+mouse-only control dated 2026-08-30, revised 2026-08-31).
 
 ## Mouse-only play (accessibility)
 

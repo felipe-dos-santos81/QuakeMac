@@ -30,6 +30,17 @@ reviews should use these names.
   (`sys_unix.c` — main, clock, the Sys_* family) sits there too for the
   two GL clients (qwsv's copy stays in the flat `QuakeWorld/server/`),
   deliberately separate.
+- **Mouse-only control** — glquake-only accessibility module
+  `Quake/client/cl_access.c` (QuakeWorld untouched), kill switch
+  `access_mouseonly`. Scheme v2 (2026-08-31): MOUSE1 fires,
+  double-click MOUSE1 jumps, MOUSE2 toggles **Look/Walk** modes; Walk
+  mode moves on Y, sidesteps on X, and levels the view on entry; the
+  boxed HUD LOOK/WALK label is a clickable toggle fallback; during
+  demo playback any click opens the main menu. Default config
+  `configs/autoexec-mouseonly.cfg` is copied to
+  `game/id1/autoexec.cfg` at runtime (game data — never committed).
+  Spec: `docs/superpowers/specs/2026-08-30-mouse-only-control-
+  design.md` ("Revision 2026-08-31" section).
 - **Game data** — `game/id1/` feeds glquake; `game/qw/` feeds
   qwsv/glqwcl; both QuakeWorld binaries mount id1 and qw at startup.
   Loose TGA overrides under `game/id1/` (and `game/qw/` for QW) are game data
