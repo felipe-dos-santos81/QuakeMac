@@ -75,7 +75,8 @@ QW_CLIENT_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 # gl_vidsdl.c as a separate input module; cd_null.o and sys_unix.o joined
 # QUAKE_PLATFORM_OBJS in the module-folder restructure)
 QUAKE_CORE_OBJS = \
-	$(QUAKE_BUILDDIR)/client/cl_demo.o $(QUAKE_BUILDDIR)/client/cl_input.o \
+	$(QUAKE_BUILDDIR)/client/cl_access.o $(QUAKE_BUILDDIR)/client/cl_demo.o \
+	$(QUAKE_BUILDDIR)/client/cl_input.o \
 	$(QUAKE_BUILDDIR)/client/cl_main.o $(QUAKE_BUILDDIR)/client/cl_parse.o \
 	$(QUAKE_BUILDDIR)/client/cl_tent.o $(QUAKE_BUILDDIR)/client/chase.o \
 	$(QUAKE_BUILDDIR)/common/cmd.o $(QUAKE_BUILDDIR)/common/common.o \

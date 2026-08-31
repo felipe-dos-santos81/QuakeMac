@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // cl_main.c  -- client main loop
 
 #include "quakedef.h"
+#include "cl_access.h"
 
 // we need to declare some mouse variables here, because the menu system
 // references them even when on a unix system.
@@ -98,6 +99,8 @@ This is also called on Host_Error, so it shouldn't cause any errors
 */
 void CL_Disconnect (void)
 {
+	Access_Reset ();
+
 // stop sounds (especially looping!)
 	S_StopAllSounds (true);
 	
@@ -719,6 +722,7 @@ void CL_Init (void)
 	SZ_Alloc (&cls.message, 1024);
 
 	CL_InitInput ();
+	Access_Init ();
 	CL_InitTEnts ();
 	
 //

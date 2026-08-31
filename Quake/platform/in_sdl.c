@@ -15,6 +15,7 @@ SDL3 notes:
 #include <SDL3/SDL.h>
 
 #include "quakedef.h"
+#include "cl_access.h"
 
 extern SDL_Window *sdl_window;	/* owned by gl_vidsdl.c */
 
@@ -175,7 +176,8 @@ static void HandleEvents(void)
 			else if (event.button.button == SDL_BUTTON_X2)
 				b = 4;
 			if (b >= 0)
-				Key_Event(K_MOUSE1 + b, event.button.down);
+				Access_ButtonEvent(K_MOUSE1 + b, event.button.down,
+				                   (unsigned int)SDL_GetTicks());
 			break;
 
 		case SDL_EVENT_MOUSE_WHEEL:
@@ -268,6 +270,13 @@ void IN_MouseMove (usercmd_t *cmd)
 {
 	if (!mouse_avail)
 		return;
+
+	if (access_mouseonly.value)
+	{
+		Access_MouseMove (cmd, mx, my);
+		mx = my = 0;
+		return;
+	}
 
 	if (m_filter.value)
 	{

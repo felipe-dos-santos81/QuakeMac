@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // screen.c -- master for refresh, status bar, console, chat, notify, etc
 
 #include "quakedef.h"
+#include "cl_access.h"
 
 void GL_Set2D (void);
 
@@ -917,6 +918,8 @@ void SCR_UpdateScreen (void)
 		SCR_DrawConsole ();	
 		M_Draw ();
 	}
+
+	Access_DrawHUD ();
 
 	V_UpdatePalette ();
 

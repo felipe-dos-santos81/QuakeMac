@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "r_local.h"
+#include "cl_access.h"
 
 /*
 
@@ -666,6 +667,9 @@ void _Host_Frame (float time)
 
 // allow mice or other external controllers to add commands
 	IN_Commands ();
+
+// accessibility module: gesture timers, safety resets, pitch easing
+	Access_Frame ((float)host_frametime);
 
 // process console commands
 	Cbuf_Execute ();
