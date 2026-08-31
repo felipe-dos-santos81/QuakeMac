@@ -32,6 +32,9 @@ reviews should use these names.
   deliberately separate.
 - **Game data** — `game/id1/` feeds glquake; `game/qw/` feeds
   qwsv/glqwcl; both QuakeWorld binaries mount id1 and qw at startup.
+  Loose TGA overrides under `game/id1/` (and `game/qw/` for QW) are game data
+  too — same rule; the committed pipeline that produces them lives in
+  `tools/` (decoupled, Pillow-only).
 - **Gates** — the build oracle (`make clean && make build-release
   build-server build-client` from the repo root), the 3-binary SIGKILL
   smoke protocol ("Received signal" count must be 0), and the Fixes

@@ -18,7 +18,10 @@ for educational purposes only. Three binaries: `glquake` (`Quake/`),
 - Runtime smoke checks (need user game data): `make run` /
   `make run-server` / `make run-client`.
 - Game data is user-supplied in `game/` (gitignored) — never commit
-  `.pak` files or other assets from the commercial game.
+  `.pak` files or other assets from the commercial game. Loose TGA
+  overrides under `game/id1/` (and `game/qw/` for QW) are game data
+  too — same rule; the committed pipeline that produces them lives in
+  `tools/` (decoupled, Pillow-only).
 - Specs, plans, and the append-only Fixes Ledger:
   `docs/superpowers/`.
 - License: GPL, see `gnu.txt`.

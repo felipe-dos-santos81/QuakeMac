@@ -354,7 +354,7 @@ run-server: check-data-qw build-server ## Launch qwsv against $(GAMEDIR)/qw
 run-client: check-data-qw build-client ## Launch glqwcl against $(GAMEDIR)/qw
 	$(QW_BUILDDIR)/glqwcl -basedir "$(GAMEDIR)" +gamedir qw
 
-# ── Tools ────────────────────────────────────────────────────────────────────
+# ── Tools (decoupled, Pillow-only; see tools/README.md) ─────────────────────
 
 export-textures: ## Extract game textures from $(GAMEDIR)/id1 to tools/extracted/
 	python3 tools/extract.py "$(GAMEDIR)/id1"

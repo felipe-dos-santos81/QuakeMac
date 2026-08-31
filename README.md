@@ -23,6 +23,7 @@ license.
 - macOS on Apple Silicon, Xcode command line tools (`cc`, `make`)
 - SDL3, resolvable via pkg-config: `brew install sdl3 pkg-config`
 - Game data from a legally owned Quake (not included; `game/` is gitignored)
+- Python 3 + Pillow (`pip install Pillow`) — only for the optional texture tools in `tools/`
 
 ## Build
 
@@ -39,7 +40,8 @@ The three builds are independent — add `-j` to parallelize, e.g.
 
 Other targets: `build-debug` / `build-server-debug`, `check-data`
 (both games; `check-data-quake` / `check-data-qw` check one), `run` /
-`run-server` / `run-client`, `clean`.
+`run-server` / `run-client`, `export-textures` (extract game textures
+to `tools/extracted/`), `clean`.
 
 ## Game data (not included)
 
@@ -68,8 +70,35 @@ make run-server   # qwsv against game/qw
 make run-client   # glqwcl; then: connect localhost
 ```
 
+## External texture overrides (optional)
+
+Loose TGA files under `game/id1/` override the original 8-bit assets
+at load time in both GL clients (`glquake` and `glqwcl`):
+
+```
+game/id1/textures/<name>.tga   — brush textures (any power-of-two size, same aspect)
+game/id1/gfx/<name>.tga        — menu/HUD pics (exact original size)
+game/id1/progs/<model>.tga     — alias skins / sprite frames (same aspect)
+```
+
+Toggle at runtime with `gl_externaltextures 0/1` (applies to
+subsequently loaded textures). See `tools/README.md` for the
+extraction pipeline.
+
+### Texture tools (decoupled, `tools/`)
+
+```sh
+pip install Pillow                       # one-time
+make export-textures                     # → tools/extracted/ + manifest.json
+# edit PNGs in tools/extracted/ with any image tool (keep stem names)
+python3 tools/install.py <png-or-dir>    # validates + writes TGA to game/id1/
+```
+
+`tools/extracted/` is gitignored — it derives from commercial game
+data and is never committed.
+
 ## Documentation
 
 Design specs, implementation plans, and the running Fixes Ledger live in
 `docs/superpowers/` (port spec/plan dated 2026-08-29, dead-code cleanup
-spec/plan dated 2026-08-30).
+dated 2026-08-30, external texture overrides dated 2026-08-30).
