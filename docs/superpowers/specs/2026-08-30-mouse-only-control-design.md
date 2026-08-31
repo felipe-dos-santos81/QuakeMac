@@ -89,7 +89,7 @@ Call seams in existing files (all small and mechanical):
 | client/keys.c | `{"MOUSE4", K_MOUSE4}`, `{"MOUSE5", K_MOUSE5}` in the keynames table |
 | host.c | `Host_FilterTime`: `1.0/72.0` → `1.0/host_maxfps.value`; new cvar `host_maxfps` default 72 (behavior unchanged, now pinnable/tunable) |
 | host.c `_Host_Frame` | One call `Access_Frame(host_frametime)` before `CL_SendCmd()` (host.c:663) — gesture timers, safety checks, idle timeout, layer expiry, cruise bookkeeping |
-| client/menu.c | Per-page item registration `Access_MenuItem(index, x, y, w, h)` at draw time; module owns hover, click→(set cursor + Enter), right-click→Escape, wheel→prev/next; one new `m_mouse` page (§Menus) |
+| client/menu.c | Per-page item registration `Access_MenuItem(index, x, y, w, h, cursor_ptr)` at draw time; module owns hover, click→(set cursor + Enter, queued to frame boundary), right-click→Escape, wheel→prev/next; one new `m_mouse` page (§Menus) |
 | client/sbar.c | One call `Access_DrawHUD()` after the status bar draws |
 | client/cl_main.c | `Access_Reset()` from `CL_Disconnect` path; `Access_Init()` from `CL_Init` (cl_main.c:717) |
 | Makefile | Add `$(QUAKE_BUILDDIR)/client/cl_access.o` to the glquake object list (Makefile:78-90 region) |
@@ -117,7 +117,9 @@ Call seams in existing files (all small and mechanical):
 Three primitives, all in-module, all configurable:
 
 1. **Dedicated toggle button** — `access_toggle_button` (default
-   `MOUSE3`, the wheel click): toggles mode on press.
+   `MOUSE3`, the wheel click): toggles mode on press. The engine
+   consumes this button entirely — no cfg binding is needed or
+   honored for it.
 2. **Long-press** — `access_longpress_button` (0 = off),
    `access_longpress_ms` (default 400). For the configured button the
    down event is held pending: released before the threshold → the
@@ -241,7 +243,7 @@ Command `access_toggle_cruise` (bound to MOUSE2 in the default map).
   `LOOK MODE` (also `LAYER` when the sticky layer opens) on every
   transition, via `Draw_String`.
 - **Persistent HUD indicator** (`access_hud` 0/1, default 1), drawn in
-  the 320×200 virtual screen above the status bar's top-left:
+  the engine's 2D coordinate space at the top-left corner:
   mode text `LOOK`/`WALK` plus `CRUISE` tag when active, and a 64 px
   horizontal throttle bar (`Draw_Fill`) showing signed throttle in
   Walk mode and cruise state in Look mode.
@@ -250,14 +252,16 @@ Command `access_toggle_cruise` (bound to MOUSE2 in the default map).
 
 The port never hides the system cursor, so in menus the OS cursor is
 the pointer. The module reads its position with `SDL_GetMouseState`,
-scaled from window pixels to the 320×200 virtual screen using the
+scaled from window pixels into the engine's 2D coordinate space
+(`vid.width × vid.height` — 640×480 by default on this port, set by
+`GL_Set2D`; menu coordinates live in that same space) using the
 current window size (gl_vidsdl.c owns the window).
 
 - Each menu page registers its selectable items at draw time via
-  `Access_MenuItem(index, x, y, w, h)` — vanilla draws every item at
-  hardcoded coordinates, so rects are free. Item rect = text/pic
-  bounds; hit rects are padded by 2 px on each side for fat-finger
-  tolerance.
+  `Access_MenuItem(index, x, y, w, h, &page_cursor)` — vanilla draws
+  every item at hardcoded coordinates, so rects are free. Item rect =
+  text/pic bounds; hit rects are padded by 2 px on each side for
+  fat-finger tolerance.
 - Hover: the page queries `Access_MenuHovered(index)` and draws the
   standard highlight.
 - Left click = set that page's cursor to the hovered item, then
@@ -316,7 +320,8 @@ the repo can't ship anything under `game/id1/`; the file header says
 to copy it to `game/id1/autoexec.cfg`, which the engine execs
 automatically at startup).
 
-Contents: the default bindings above; `access_*` settings tuned for a
+Contents: the default bindings above except MOUSE3 (engine-consumed
+via `access_toggle_button`, see §Gesture engine); `access_*` settings tuned for a
 mouse with the throttle profile; supporting settings `sv_aim 0.93`,
 `cl_bob 0`, `cl_rollangle 0`, `v_kicktime 0`, `host_timescale 1`,
 `cl_forwardspeed 400` / `cl_backspeed 400` (always-run),
