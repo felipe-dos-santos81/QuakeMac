@@ -102,3 +102,26 @@ data and is never committed.
 Design specs, implementation plans, and the running Fixes Ledger live in
 `docs/superpowers/` (port spec/plan dated 2026-08-29, dead-code cleanup
 dated 2026-08-30, external texture overrides dated 2026-08-30).
+
+## Mouse-only play (accessibility)
+
+glquake can be played entirely with a pointing device — no keyboard,
+including menus and saving. Copy `configs/autoexec-mouseonly.cfg` to
+`game/id1/autoexec.cfg` and launch.
+
+- Look mode (default): standard mouselook. Wheel click toggles to
+  Walk mode: mouse forward/back sets a throttle (the mouse can rest
+  still while walking), X turns, holding MOUSE4 sidesteps. Pitch stays
+  level; vertical auto-aim (`sv_aim`) covers aiming while firing.
+- MOUSE1 fire, MOUSE2 cruise control, MOUSE4 strafe, MOUSE5 jump /
+  swim up, wheel cycles weapons.
+- Menus are point-and-click: left click selects, right click goes
+  back, wheel scrolls. Options > Mouse-only options tunes everything
+  (gains, dead zone, response curve, speed cap, tremor filter,
+  turn-rate cap, gestures, HUD, sounds, plus sv_aim / cl_bob /
+  cl_rollangle / v_kicktime / host_timescale / host_maxfps).
+- 2-3 button devices: see the commented fallback block at the bottom
+  of the cfg (double-click toggles modes, long-press opens a sticky
+  layer: next click = quicksave, next = menu).
+- The cursor is never locked; keep the window focused for motion
+  input. `access_mouseonly 0` restores stock input.
