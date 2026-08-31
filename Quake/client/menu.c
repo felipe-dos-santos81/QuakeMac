@@ -23,7 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 void (*vid_menudrawfn)(void);
 void (*vid_menukeyfn)(int key);
 
-enum {m_none, m_main, m_singleplayer, m_load, m_save, m_multiplayer, m_setup, m_net, m_options, m_video, m_keys, m_help, m_quit, m_serialconfig, m_modemconfig, m_lanconfig, m_gameoptions, m_search, m_slist} m_state;
+enum {m_none, m_main, m_singleplayer, m_load, m_save, m_multiplayer, m_setup, m_net, m_options, m_video, m_mouse, m_keys, m_help, m_quit, m_serialconfig, m_modemconfig, m_lanconfig, m_gameoptions, m_search, m_slist} m_state;
 
 void M_Menu_Main_f (void);
 	void M_Menu_SinglePlayer_f (void);
@@ -35,6 +35,7 @@ void M_Menu_Main_f (void);
 	void M_Menu_Options_f (void);
 		void M_Menu_Keys_f (void);
 		void M_Menu_Video_f (void);
+		void M_Menu_Mouse_f (void);
 	void M_Menu_Help_f (void);
 	void M_Menu_Quit_f (void);
 void M_Menu_SerialConfig_f (void);
@@ -81,6 +82,14 @@ void M_LanConfig_Key (int key);
 void M_GameOptions_Key (int key);
 void M_Search_Key (int key);
 void M_ServerList_Key (int key);
+
+extern cvar_t	access_mouseonly, access_move_profile, access_throttle_gain;
+extern cvar_t	access_velocity_gain, access_deadzone, access_curve;
+extern cvar_t	access_walkspeed, access_tremor, access_turnrate;
+extern cvar_t	access_throttle_decay, access_toggle_button, access_longpress_ms;
+extern cvar_t	access_idle_timeout, access_hud, access_sounds;
+extern cvar_t	sv_aim, cl_bob, cl_rollangle, v_kicktime;
+extern cvar_t	host_timescale, host_maxfps;
 
 qboolean	m_entersound;		// play after drawing a frame, so caching
 								// won't disrupt the sound
@@ -1133,7 +1142,7 @@ again:
 //=============================================================================
 /* OPTIONS MENU */
 
-#define	OPTIONS_ITEMS	13
+#define	OPTIONS_ITEMS	14
 
 #define	SLIDER_RANGE	10
 
@@ -1308,8 +1317,14 @@ void M_Options_Draw (void)
 	Access_MenuItem (11, 16, 120, 8 * (int)strlen ("            Lookstrafe"), 8, &options_cursor);
 	M_DrawCheckbox (220, 120, lookstrafe.value);
 
+	M_Print (16, 128, "    Mouse-only options");
+	Access_MenuItem (12, 16, 128, 8 * (int)strlen ("    Mouse-only options"), 8, &options_cursor);
+
 	if (vid_menudrawfn)
-		M_Print (16, 128, "         Video Options");
+	{
+		M_Print (16, 136, "         Video Options");
+		Access_MenuItem (13, 16, 136, 8 * (int)strlen ("         Video Options"), 8, &options_cursor);
+	}
 
 // cursor
 	M_DrawCharacter (200, 32 + options_cursor*8, 12+((int)(realtime*4)&1));
@@ -1339,6 +1354,9 @@ void M_Options_Key (int k)
 			Cbuf_AddText ("exec default.cfg\n");
 			break;
 		case 12:
+			M_Menu_Mouse_f ();
+			break;
+		case 13:
 			M_Menu_Video_f ();
 			break;
 		default:
@@ -1370,10 +1388,10 @@ void M_Options_Key (int k)
 		break;
 	}
 
-	if (options_cursor == 12 && vid_menudrawfn == NULL)
+	if (options_cursor == 13 && vid_menudrawfn == NULL)
 	{
 		if (k == K_UPARROW)
-			options_cursor = 11;
+			options_cursor = 12;
 		else
 			options_cursor = 0;
 	}
@@ -1604,6 +1622,284 @@ void M_Video_Draw (void)
 void M_Video_Key (int key)
 {
 	(*vid_menukeyfn) (key);
+}
+
+//=============================================================================
+/* MOUSE-ONLY MENU */
+
+#define	MOUSE_ITEMS	21
+
+int		mouse_cursor;
+
+void M_Menu_Mouse_f (void)
+{
+	key_dest = key_menu;
+	m_state = m_mouse;
+	m_entersound = true;
+}
+
+static float Mouse_SliderRange (int item, float value)
+{
+	switch (item)
+	{
+	case 2: return (access_throttle_gain.value - 0.0005f) / 0.0095f;
+	case 3: return (access_velocity_gain.value - 0.1f) / 4.9f;
+	case 4: return access_deadzone.value / 20.0f;
+	case 5: return (access_curve.value - 0.25f) / 3.75f;
+	case 6: return (access_walkspeed.value - 50) / 340.0f;
+	case 7: return access_tremor.value / 0.95f;
+	case 8: return access_turnrate.value / 720.0f;
+	case 9: return access_throttle_decay.value / 3.0f;
+	case 11: return (access_longpress_ms.value - 100) / 1400.0f;
+	case 12: return access_idle_timeout.value / 30.0f;
+	case 15: return (sv_aim.value - 0.5f) / 0.5f;
+	case 16: return cl_bob.value / 0.05f;
+	case 17: return cl_rollangle.value / 2.0f;
+	case 18: return v_kicktime.value / 0.5f;
+	case 19: return (host_timescale.value - 0.25f) / 1.25f;
+	case 20: return (host_maxfps.value - 30) / 114.0f;
+	}
+	return 0;
+}
+
+static void M_AdjustMouse (int dir)
+{
+	S_LocalSound ("misc/menu3.wav");
+
+	switch (mouse_cursor)
+	{
+	case 0:	/* master switch */
+		Cvar_SetValue ("access_mouseonly", !access_mouseonly.value);
+		break;
+	case 1:	/* profile */
+		Cvar_SetValue ("access_move_profile", !access_move_profile.value);
+		break;
+	case 2:
+		Cvar_SetValue ("access_throttle_gain", access_throttle_gain.value + dir * 0.0005);
+		if (access_throttle_gain.value < 0.0005) Cvar_SetValue ("access_throttle_gain", 0.0005);
+		if (access_throttle_gain.value > 0.01) Cvar_SetValue ("access_throttle_gain", 0.01);
+		break;
+	case 3:
+		Cvar_SetValue ("access_velocity_gain", access_velocity_gain.value + dir * 0.1);
+		if (access_velocity_gain.value < 0.1) Cvar_SetValue ("access_velocity_gain", 0.1);
+		if (access_velocity_gain.value > 5) Cvar_SetValue ("access_velocity_gain", 5);
+		break;
+	case 4:
+		Cvar_SetValue ("access_deadzone", access_deadzone.value + dir);
+		if (access_deadzone.value < 0) Cvar_SetValue ("access_deadzone", 0);
+		if (access_deadzone.value > 20) Cvar_SetValue ("access_deadzone", 20);
+		break;
+	case 5:
+		Cvar_SetValue ("access_curve", access_curve.value + dir * 0.25);
+		if (access_curve.value < 0.25) Cvar_SetValue ("access_curve", 0.25);
+		if (access_curve.value > 4) Cvar_SetValue ("access_curve", 4);
+		break;
+	case 6:
+		Cvar_SetValue ("access_walkspeed", access_walkspeed.value + dir * 10);
+		if (access_walkspeed.value < 50) Cvar_SetValue ("access_walkspeed", 50);
+		if (access_walkspeed.value > 390) Cvar_SetValue ("access_walkspeed", 390);
+		break;
+	case 7:
+		Cvar_SetValue ("access_tremor", access_tremor.value + dir * 0.05);
+		if (access_tremor.value < 0) Cvar_SetValue ("access_tremor", 0);
+		if (access_tremor.value > 0.95) Cvar_SetValue ("access_tremor", 0.95);
+		break;
+	case 8:
+		Cvar_SetValue ("access_turnrate", access_turnrate.value + dir * 30);
+		if (access_turnrate.value < 0) Cvar_SetValue ("access_turnrate", 0);
+		if (access_turnrate.value > 720) Cvar_SetValue ("access_turnrate", 720);
+		break;
+	case 9:
+		Cvar_SetValue ("access_throttle_decay", access_throttle_decay.value + dir * 0.1);
+		if (access_throttle_decay.value < 0) Cvar_SetValue ("access_throttle_decay", 0);
+		if (access_throttle_decay.value > 3) Cvar_SetValue ("access_throttle_decay", 3);
+		break;
+	case 10:	/* toggle button: cycle MOUSE1..MOUSE5 */
+	{
+		int	b = (int)access_toggle_button.value + dir;
+		if (b < K_MOUSE1) b = K_MOUSE5;
+		if (b > K_MOUSE5) b = K_MOUSE1;
+		Cvar_SetValue ("access_toggle_button", b);
+		break;
+	}
+	case 11:
+		Cvar_SetValue ("access_longpress_ms", access_longpress_ms.value + dir * 50);
+		if (access_longpress_ms.value < 100) Cvar_SetValue ("access_longpress_ms", 100);
+		if (access_longpress_ms.value > 1500) Cvar_SetValue ("access_longpress_ms", 1500);
+		break;
+	case 12:
+		Cvar_SetValue ("access_idle_timeout", access_idle_timeout.value + dir);
+		if (access_idle_timeout.value < 0) Cvar_SetValue ("access_idle_timeout", 0);
+		if (access_idle_timeout.value > 30) Cvar_SetValue ("access_idle_timeout", 30);
+		break;
+	case 13:
+		Cvar_SetValue ("access_hud", !access_hud.value);
+		break;
+	case 14:
+		Cvar_SetValue ("access_sounds", !access_sounds.value);
+		break;
+	case 15:
+		Cvar_SetValue ("sv_aim", sv_aim.value + dir * 0.01);
+		if (sv_aim.value < 0.5) Cvar_SetValue ("sv_aim", 0.5);
+		if (sv_aim.value > 1) Cvar_SetValue ("sv_aim", 1);
+		break;
+	case 16:
+		Cvar_SetValue ("cl_bob", cl_bob.value + dir * 0.005);
+		if (cl_bob.value < 0) Cvar_SetValue ("cl_bob", 0);
+		if (cl_bob.value > 0.05) Cvar_SetValue ("cl_bob", 0.05);
+		break;
+	case 17:
+		Cvar_SetValue ("cl_rollangle", cl_rollangle.value + dir * 0.5);
+		if (cl_rollangle.value < 0) Cvar_SetValue ("cl_rollangle", 0);
+		if (cl_rollangle.value > 2) Cvar_SetValue ("cl_rollangle", 2);
+		break;
+	case 18:
+		Cvar_SetValue ("v_kicktime", v_kicktime.value + dir * 0.05);
+		if (v_kicktime.value < 0) Cvar_SetValue ("v_kicktime", 0);
+		if (v_kicktime.value > 0.5) Cvar_SetValue ("v_kicktime", 0.5);
+		break;
+	case 19:
+		Cvar_SetValue ("host_timescale", host_timescale.value + dir * 0.05);
+		if (host_timescale.value < 0.25) Cvar_SetValue ("host_timescale", 0.25);
+		if (host_timescale.value > 1.5) Cvar_SetValue ("host_timescale", 1.5);
+		break;
+	case 20:
+		Cvar_SetValue ("host_maxfps", host_maxfps.value + dir * 6);
+		if (host_maxfps.value < 30) Cvar_SetValue ("host_maxfps", 30);
+		if (host_maxfps.value > 144) Cvar_SetValue ("host_maxfps", 144);
+		break;
+	}
+}
+
+void M_Mouse_Draw (void)
+{
+	int		y0 = 30;
+	int		i;
+
+	M_Print (16, y0 + 8*0,  "       Mouse-only play");
+	M_DrawCheckbox (220, y0 + 8*0, access_mouseonly.value);
+
+	M_Print (16, y0 + 8*1,  "        Move profile");
+	M_Print (220, y0 + 8*1, access_move_profile.value ? "velocity" : "throttle");
+
+	M_Print (16, y0 + 8*2,  "       Throttle gain");
+	M_DrawSlider (220, y0 + 8*2, Mouse_SliderRange (2, 0));
+
+	M_Print (16, y0 + 8*3,  "       Velocity gain");
+	M_DrawSlider (220, y0 + 8*3, Mouse_SliderRange (3, 0));
+
+	M_Print (16, y0 + 8*4,  "           Dead zone");
+	M_DrawSlider (220, y0 + 8*4, Mouse_SliderRange (4, 0));
+
+	M_Print (16, y0 + 8*5,  "      Response curve");
+	M_DrawSlider (220, y0 + 8*5, Mouse_SliderRange (5, 0));
+
+	M_Print (16, y0 + 8*6,  "       Walk speed cap");
+	M_DrawSlider (220, y0 + 8*6, Mouse_SliderRange (6, 0));
+
+	M_Print (16, y0 + 8*7,  "      Tremor filter");
+	M_DrawSlider (220, y0 + 8*7, Mouse_SliderRange (7, 0));
+
+	M_Print (16, y0 + 8*8,  "   Walk turn-rate cap");
+	M_DrawSlider (220, y0 + 8*8, Mouse_SliderRange (8, 0));
+
+	M_Print (16, y0 + 8*9,  "      Throttle decay");
+	M_DrawSlider (220, y0 + 8*9, Mouse_SliderRange (9, 0));
+
+	M_Print (16, y0 + 8*10, "        Toggle button");
+	M_Print (220, y0 + 8*10, Key_KeynumToString ((int)access_toggle_button.value));
+
+	M_Print (16, y0 + 8*11, "      Long-press (ms)");
+	M_DrawSlider (220, y0 + 8*11, Mouse_SliderRange (11, 0));
+
+	M_Print (16, y0 + 8*12, " Idle timeout (s,0=off)");
+	M_DrawSlider (220, y0 + 8*12, Mouse_SliderRange (12, 0));
+
+	M_Print (16, y0 + 8*13, "          HUD display");
+	M_DrawCheckbox (220, y0 + 8*13, access_hud.value);
+
+	M_Print (16, y0 + 8*14, "       Sounds");
+	M_DrawCheckbox (220, y0 + 8*14, access_sounds.value);
+
+	M_Print (16, y0 + 8*15, "     Vertical auto-aim");
+	M_DrawSlider (220, y0 + 8*15, Mouse_SliderRange (15, 0));
+
+	M_Print (16, y0 + 8*16, "             View bob");
+	M_DrawSlider (220, y0 + 8*16, Mouse_SliderRange (16, 0));
+
+	M_Print (16, y0 + 8*17, "       View roll angle");
+	M_DrawSlider (220, y0 + 8*17, Mouse_SliderRange (17, 0));
+
+	M_Print (16, y0 + 8*18, "       Damage kick time");
+	M_DrawSlider (220, y0 + 8*18, Mouse_SliderRange (18, 0));
+
+	M_Print (16, y0 + 8*19, "        Time scale");
+	M_DrawSlider (220, y0 + 8*19, Mouse_SliderRange (19, 0));
+
+	M_Print (16, y0 + 8*20, "          Max FPS");
+	M_DrawSlider (220, y0 + 8*20, Mouse_SliderRange (20, 0));
+
+	/* registration for point-and-click. Label area (x 16..212) is the
+	   item — click = Enter = default action. Rows with a control at
+	   x=220 additionally get left/right adjust zones; rects never
+	   overlap, so one click fires exactly one action. */
+	for (i = 0; i < MOUSE_ITEMS; i++)
+	{
+		Access_MenuItem (i, 16, y0 + 8*i, 196, 8, &mouse_cursor);
+		if (i >= 2 && i != 13 && i != 14)
+		{
+			if (Access_ClickRect (212, y0 + 8*i, 52, 8))
+			{
+				mouse_cursor = i;
+				M_AdjustMouse (-1);
+			}
+			if (Access_ClickRect (264, y0 + 8*i, 52, 8))
+			{
+				mouse_cursor = i;
+				M_AdjustMouse (1);
+			}
+		}
+	}
+
+	/* cursor */
+	M_DrawCharacter (200, y0 + mouse_cursor*8, 12+((int)(realtime*4)&1));
+}
+
+void M_Mouse_Key (int k)
+{
+	switch (k)
+	{
+	case K_ESCAPE:
+		M_Menu_Options_f ();
+		break;
+
+	case K_ENTER:
+		m_entersound = true;
+		M_AdjustMouse (1);
+		return;
+
+	case K_UPARROW:
+		S_LocalSound ("misc/menu1.wav");
+		mouse_cursor--;
+		if (mouse_cursor < 0)
+			mouse_cursor = MOUSE_ITEMS-1;
+		break;
+
+	case K_DOWNARROW:
+		S_LocalSound ("misc/menu1.wav");
+		mouse_cursor++;
+		if (mouse_cursor >= MOUSE_ITEMS)
+			mouse_cursor = 0;
+		break;
+
+	case K_LEFTARROW:
+		M_AdjustMouse (-1);
+		break;
+
+	case K_RIGHTARROW:
+		M_AdjustMouse (1);
+		break;
+	}
 }
 
 //=============================================================================
@@ -3191,6 +3487,10 @@ void M_Draw (void)
 		M_Video_Draw ();
 		break;
 
+	case m_mouse:
+		M_Mouse_Draw ();
+		break;
+
 	case m_help:
 		M_Help_Draw ();
 		break;
@@ -3289,6 +3589,10 @@ void M_Keydown (int key)
 	case m_video:
 		M_Video_Key (key);
 		return;
+
+	case m_mouse:
+		M_Mouse_Key (key);
+		break;
 
 	case m_help:
 		M_Help_Key (key);
