@@ -139,6 +139,8 @@ def main():
         return
     gamedir = os.path.join("game", "id1")
     if args[:1] == ["--gamedir"]:
+        if len(args) < 2:
+            sys.exit(__doc__)
         gamedir, args = args[1], args[2:]
     if not args:
         sys.exit(__doc__)

@@ -1461,7 +1461,7 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 {
 	int		i, j, k;
 	char	name[32];
-	char	path[MAX_QPATH + 16];
+	char	path[MAX_QPATH + 32];
 	char	suffix[16];
 	int		s;
 	byte	*skin;
@@ -1755,7 +1755,7 @@ void * Mod_LoadSpriteFrame (void * pin, mspriteframe_t **ppframe, int framenum)
 	mspriteframe_t		*pspriteframe;
 	int					width, height, size, origin[2];
 	char				name[64];
-	char				path[MAX_QPATH + 16];
+	char				path[MAX_QPATH + 32];
 	char				suffix[16];
 
 	pinframe = (dspriteframe_t *)pin;
