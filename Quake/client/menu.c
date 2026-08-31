@@ -637,11 +637,17 @@ void M_MultiPlayer_Draw (void)
 {
 	int		f;
 	qpic_t	*p;
+	qpic_t	*items;
+	int		i;
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
 	p = Draw_CachePic ("gfx/p_multi.lmp");
 	M_DrawPic ( (320-p->width)/2, 4, p);
-	M_DrawTransPic (72, 32, Draw_CachePic ("gfx/mp_menu.lmp") );
+	items = Draw_CachePic ("gfx/mp_menu.lmp");
+	M_DrawTransPic (72, 32, items);
+
+	for (i = 0; i < MULTIPLAYER_ITEMS; i++)
+		Access_MenuItem (i, 72, 32 + i * 20, items->width, 20, &m_multiplayer_cursor);
 
 	f = (int)(host_time * 10)%6;
 
@@ -721,6 +727,54 @@ void M_Menu_Setup_f (void)
 }
 
 
+/* color slider adjust, shared by M_Setup_Key's arrow cases and the
+   clickable halves M_Setup_Draw registers (dir -1 / +1) */
+static void M_Setup_AdjustColor (int dir)
+{
+	if (setup_cursor < 2)
+		return;
+	S_LocalSound ("misc/menu3.wav");
+	if (setup_cursor == 2)
+		setup_top += dir;
+	if (setup_cursor == 3)
+		setup_bottom += dir;
+
+	if (setup_top > 13)
+		setup_top = 0;
+	if (setup_top < 0)
+		setup_top = 13;
+	if (setup_bottom > 13)
+		setup_bottom = 0;
+	if (setup_bottom < 0)
+		setup_bottom = 13;
+}
+
+/* character insertion for the hostname/name fields, shared by
+   M_Setup_Key's default case and the clickable name palette */
+static void M_Setup_TypeChar (int k)
+{
+	int	l;
+
+	if (setup_cursor == 0)
+	{
+		l = strlen(setup_hostname);
+		if (l < 15)
+		{
+			setup_hostname[l+1] = 0;
+			setup_hostname[l] = k;
+		}
+	}
+	if (setup_cursor == 1)
+	{
+		l = strlen(setup_myname);
+		if (l < 15)
+		{
+			setup_myname[l+1] = 0;
+			setup_myname[l] = k;
+		}
+	}
+}
+
 void M_Setup_Draw (void)
 {
 	qpic_t	*p;
@@ -730,10 +784,12 @@ void M_Setup_Draw (void)
 	M_DrawPic ( (320-p->width)/2, 4, p);
 
 	M_Print (64, 40, "Hostname");
+	Access_MenuItem (0, 64, 40, 8 * (int)strlen ("Hostname"), 8, &setup_cursor);
 	M_DrawTextBox (160, 32, 16, 1);
 	M_Print (168, 40, setup_hostname);
 
 	M_Print (64, 56, "Your name");
+	Access_MenuItem (1, 64, 56, 8 * (int)strlen ("Your name"), 8, &setup_cursor);
 	M_DrawTextBox (160, 48, 16, 1);
 	M_Print (168, 56, setup_myname);
 
@@ -742,6 +798,7 @@ void M_Setup_Draw (void)
 
 	M_DrawTextBox (64, 140-8, 14, 1);
 	M_Print (72, 140, "Accept Changes");
+	Access_MenuItem (4, 72, 140, 8 * (int)strlen ("Accept Changes"), 8, &setup_cursor);
 
 	p = Draw_CachePic ("gfx/bigbox.lmp");
 	M_DrawTransPic (160, 64, p);
@@ -756,13 +813,62 @@ void M_Setup_Draw (void)
 
 	if (setup_cursor == 1)
 		M_DrawCharacter (168 + 8*strlen(setup_myname), setup_cursor_table [setup_cursor], 10+((int)(realtime*4)&1));
+
+	/* color sliders: left/right half of each row adjusts the color of
+	   that row (click zones only; no Access_MenuItem rects here, so the
+	   zones cannot double-fire with item clicks) */
+	{
+		int	w = 8 * (int)strlen ("Shirt color");	/* "Pants color" is the same width */
+
+		if (Access_ClickRect (64, 80, w / 2, 8))
+		{
+			setup_cursor = 2;
+			M_Setup_AdjustColor (-1);
+		}
+		if (Access_ClickRect (64 + w / 2, 80, w / 2, 8))
+		{
+			setup_cursor = 2;
+			M_Setup_AdjustColor (1);
+		}
+		if (Access_ClickRect (64, 104, w / 2, 8))
+		{
+			setup_cursor = 3;
+			M_Setup_AdjustColor (-1);
+		}
+		if (Access_ClickRect (64 + w / 2, 104, w / 2, 8))
+		{
+			setup_cursor = 3;
+			M_Setup_AdjustColor (1);
+		}
+	}
+
+	/* one-row name palette (mouse-only typing). Drawn only while the
+	   module is on so vanilla pixels are untouched when it is off.
+	   y = 184 is clear: the lowest setup art (bigbox at 160,64) is 72 px
+	   tall and ends at y = 136 */
+	if (access_mouseonly.value)
+	{
+		static char	palette[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+		int		i, px, py = 184;
+		int		x0 = (320 - 37 * 8) / 2;
+
+		for (i = 0; i < 36; i++)
+		{
+			px = x0 + i * 8;
+			M_DrawCharacter (px, py, palette[i]);
+			if (Access_ClickRect (px, py, 8, 8))
+				M_Setup_TypeChar (palette[i]);
+		}
+		px = x0 + 36 * 8;
+		M_DrawCharacter (px, py, 127);
+		if (Access_ClickRect (px, py, 8, 8))
+			M_Setup_Key (K_BACKSPACE);	/* delete, same as the keyboard path */
+	}
 }
 
 
 void M_Setup_Key (int k)
 {
-	int			l;
-
 	switch (k)
 	{
 	case K_ESCAPE:
@@ -784,23 +890,13 @@ void M_Setup_Key (int k)
 		break;
 
 	case K_LEFTARROW:
-		if (setup_cursor < 2)
-			return;
-		S_LocalSound ("misc/menu3.wav");
-		if (setup_cursor == 2)
-			setup_top = setup_top - 1;
-		if (setup_cursor == 3)
-			setup_bottom = setup_bottom - 1;
+		M_Setup_AdjustColor (-1);
 		break;
 	case K_RIGHTARROW:
 		if (setup_cursor < 2)
 			return;
 forward:
-		S_LocalSound ("misc/menu3.wav");
-		if (setup_cursor == 2)
-			setup_top = setup_top + 1;
-		if (setup_cursor == 3)
-			setup_bottom = setup_bottom + 1;
+		M_Setup_AdjustColor (1);
 		break;
 
 	case K_ENTER:
@@ -838,24 +934,7 @@ forward:
 	default:
 		if (k < 32 || k > 127)
 			break;
-		if (setup_cursor == 0)
-		{
-			l = strlen(setup_hostname);
-			if (l < 15)
-			{
-				setup_hostname[l+1] = 0;
-				setup_hostname[l] = k;
-			}
-		}
-		if (setup_cursor == 1)
-		{
-			l = strlen(setup_myname);
-			if (l < 15)
-			{
-				setup_myname[l+1] = 0;
-				setup_myname[l] = k;
-			}
-		}
+		M_Setup_TypeChar (k);
 	}
 
 	if (setup_top > 13)
@@ -934,7 +1013,10 @@ void M_Net_Draw (void)
 	}
 
 	if (p)
+	{
 		M_DrawTransPic (72, f, p);
+		Access_MenuItem (0, 72, f, p->width, 19, &m_net_cursor);
+	}
 
 	f += 19;
 
@@ -948,7 +1030,10 @@ void M_Net_Draw (void)
 	}
 
 	if (p)
+	{
 		M_DrawTransPic (72, f, p);
+		Access_MenuItem (1, 72, f, p->width, 19, &m_net_cursor);
+	}
 
 	f += 19;
 	if (ipxAvailable)
@@ -956,6 +1041,7 @@ void M_Net_Draw (void)
 	else
 		p = Draw_CachePic ("gfx/dim_ipx.lmp");
 	M_DrawTransPic (72, f, p);
+	Access_MenuItem (2, 72, f, p->width, 19, &m_net_cursor);
 
 	f += 19;
 	if (tcpipAvailable)
@@ -963,12 +1049,14 @@ void M_Net_Draw (void)
 	else
 		p = Draw_CachePic ("gfx/dim_tcp.lmp");
 	M_DrawTransPic (72, f, p);
+	Access_MenuItem (3, 72, f, p->width, 19, &m_net_cursor);
 
 	if (m_net_items == 5)	// JDC, could just be removed
 	{
 		f += 19;
 		p = Draw_CachePic ("gfx/netmen5.lmp");
 		M_DrawTransPic (72, f, p);
+		Access_MenuItem (4, 72, f, p->width, 19, &m_net_cursor);
 	}
 
 	f = (320-26*8)/2;
@@ -1401,6 +1489,9 @@ void M_Keys_Draw (void)
 		y = 48 + 8*i;
 
 		M_Print (16, y, bindnames[i][1]);
+		/* clicking a row selects it and enters bind-grab via the queued
+		   Enter; while bind_grab, raw buttons reach M_Keys_Key directly */
+		Access_MenuItem (i, 16, y, 304, 8, &keys_cursor);
 
 		l = strlen (bindnames[i][0]);
 
@@ -1503,6 +1594,9 @@ void M_Menu_Video_f (void)
 
 void M_Video_Draw (void)
 {
+	/* No Access_* registrations: the rows are drawn by the video
+	   driver's own callback, which this port never installs
+	   (vid_menudrawfn stays NULL, so m_video is unreachable). */
 	(*vid_menudrawfn) ();
 }
 
@@ -1532,6 +1626,11 @@ void M_Menu_Help_f (void)
 void M_Help_Draw (void)
 {
 	M_DrawPic (0, 0, Draw_CachePic ( va("gfx/help%i.lmp", help_page)) );
+
+	/* whole-page click zone: clicking turns the page the same way
+	   K_RIGHTARROW does in M_Help_Key (its only advance action) */
+	if (Access_ClickRect (0, 0, 320, 200))
+		M_Help_Key (K_RIGHTARROW);
 }
 
 
@@ -1671,6 +1770,11 @@ void M_Quit_Draw (void)
 	M_Print (64, 92,  quitMessage[msgNumber*4+1]);
 	M_Print (64, 100, quitMessage[msgNumber*4+2]);
 	M_Print (64, 108, quitMessage[msgNumber*4+3]);
+
+	/* clicking the panel confirms the quit, like pressing 'y'
+	   (M_DrawTextBox 24x4 at 56,76 spans 208x48) */
+	if (Access_ClickRect (56, 76, 208, 48))
+		M_Quit_Key ('y');
 }
 
 //=============================================================================
@@ -1755,23 +1859,28 @@ void M_SerialConfig_Draw (void)
 	basex += 8;
 
 	M_Print (basex, serialConfig_cursor_table[0], "Port");
+	Access_MenuItem (0, basex, serialConfig_cursor_table[0], 8 * (int)strlen ("Port"), 8, &serialConfig_cursor);
 	M_DrawTextBox (160, 40, 4, 1);
 	M_Print (168, serialConfig_cursor_table[0], va("COM%u", serialConfig_comport));
 
 	M_Print (basex, serialConfig_cursor_table[1], "IRQ");
+	Access_MenuItem (1, basex, serialConfig_cursor_table[1], 8 * (int)strlen ("IRQ"), 8, &serialConfig_cursor);
 	M_DrawTextBox (160, serialConfig_cursor_table[1]-8, 1, 1);
 	M_Print (168, serialConfig_cursor_table[1], va("%u", serialConfig_irq));
 
 	M_Print (basex, serialConfig_cursor_table[2], "Baud");
+	Access_MenuItem (2, basex, serialConfig_cursor_table[2], 8 * (int)strlen ("Baud"), 8, &serialConfig_cursor);
 	M_DrawTextBox (160, serialConfig_cursor_table[2]-8, 5, 1);
 	M_Print (168, serialConfig_cursor_table[2], va("%u", serialConfig_baudrate[serialConfig_baud]));
 
 	if (SerialConfig)
 	{
 		M_Print (basex, serialConfig_cursor_table[3], "Modem Setup...");
+		Access_MenuItem (3, basex, serialConfig_cursor_table[3], 8 * (int)strlen ("Modem Setup..."), 8, &serialConfig_cursor);
 		if (JoiningGame)
 		{
 			M_Print (basex, serialConfig_cursor_table[4], "Phone number");
+			Access_MenuItem (4, basex, serialConfig_cursor_table[4], 8 * (int)strlen ("Phone number"), 8, &serialConfig_cursor);
 			M_DrawTextBox (160, serialConfig_cursor_table[4]-8, 16, 1);
 			M_Print (168, serialConfig_cursor_table[4], serialConfig_phone);
 		}
@@ -1781,11 +1890,13 @@ void M_SerialConfig_Draw (void)
 	{
 		M_DrawTextBox (basex, serialConfig_cursor_table[5]-8, 7, 1);
 		M_Print (basex+8, serialConfig_cursor_table[5], "Connect");
+		Access_MenuItem (5, basex+8, serialConfig_cursor_table[5], 8 * (int)strlen ("Connect"), 8, &serialConfig_cursor);
 	}
 	else
 	{
 		M_DrawTextBox (basex, serialConfig_cursor_table[5]-8, 2, 1);
 		M_Print (basex+8, serialConfig_cursor_table[5], "OK");
+		Access_MenuItem (5, basex+8, serialConfig_cursor_table[5], 8 * (int)strlen ("OK"), 8, &serialConfig_cursor);
 	}
 
 	M_DrawCharacter (basex-8, serialConfig_cursor_table [serialConfig_cursor], 12+((int)(realtime*4)&1));
@@ -1995,23 +2106,32 @@ void M_ModemConfig_Draw (void)
 	basex += 8;
 
 	if (modemConfig_dialing == 'P')
+	{
 		M_Print (basex, modemConfig_cursor_table[0], "Pulse Dialing");
+		Access_MenuItem (0, basex, modemConfig_cursor_table[0], 8 * (int)strlen ("Pulse Dialing"), 8, &modemConfig_cursor);
+	}
 	else
+	{
 		M_Print (basex, modemConfig_cursor_table[0], "Touch Tone Dialing");
+		Access_MenuItem (0, basex, modemConfig_cursor_table[0], 8 * (int)strlen ("Touch Tone Dialing"), 8, &modemConfig_cursor);
+	}
 
 	M_Print (basex, modemConfig_cursor_table[1], "Clear");
+	Access_MenuItem (1, basex, modemConfig_cursor_table[1], 8 * (int)strlen ("Clear"), 8, &modemConfig_cursor);
 	M_DrawTextBox (basex, modemConfig_cursor_table[1]+4, 16, 1);
 	M_Print (basex+8, modemConfig_cursor_table[1]+12, modemConfig_clear);
 	if (modemConfig_cursor == 1)
 		M_DrawCharacter (basex+8 + 8*strlen(modemConfig_clear), modemConfig_cursor_table[1]+12, 10+((int)(realtime*4)&1));
 
 	M_Print (basex, modemConfig_cursor_table[2], "Init");
+	Access_MenuItem (2, basex, modemConfig_cursor_table[2], 8 * (int)strlen ("Init"), 8, &modemConfig_cursor);
 	M_DrawTextBox (basex, modemConfig_cursor_table[2]+4, 30, 1);
 	M_Print (basex+8, modemConfig_cursor_table[2]+12, modemConfig_init);
 	if (modemConfig_cursor == 2)
 		M_DrawCharacter (basex+8 + 8*strlen(modemConfig_init), modemConfig_cursor_table[2]+12, 10+((int)(realtime*4)&1));
 
 	M_Print (basex, modemConfig_cursor_table[3], "Hangup");
+	Access_MenuItem (3, basex, modemConfig_cursor_table[3], 8 * (int)strlen ("Hangup"), 8, &modemConfig_cursor);
 	M_DrawTextBox (basex, modemConfig_cursor_table[3]+4, 16, 1);
 	M_Print (basex+8, modemConfig_cursor_table[3]+12, modemConfig_hangup);
 	if (modemConfig_cursor == 3)
@@ -2019,6 +2139,7 @@ void M_ModemConfig_Draw (void)
 
 	M_DrawTextBox (basex, modemConfig_cursor_table[4]-8, 2, 1);
 	M_Print (basex+8, modemConfig_cursor_table[4], "OK");
+	Access_MenuItem (4, basex+8, modemConfig_cursor_table[4], 8 * (int)strlen ("OK"), 8, &modemConfig_cursor);
 
 	M_DrawCharacter (basex-8, modemConfig_cursor_table [modemConfig_cursor], 12+((int)(realtime*4)&1));
 }
@@ -2197,20 +2318,26 @@ void M_LanConfig_Draw (void)
 		M_Print (basex+9*8, 52, my_tcpip_address);
 
 	M_Print (basex, lanConfig_cursor_table[0], "Port");
+	Access_MenuItem (0, basex, lanConfig_cursor_table[0], 8 * (int)strlen ("Port"), 8, &lanConfig_cursor);
 	M_DrawTextBox (basex+8*8, lanConfig_cursor_table[0]-8, 6, 1);
 	M_Print (basex+9*8, lanConfig_cursor_table[0], lanConfig_portname);
 
 	if (JoiningGame)
 	{
 		M_Print (basex, lanConfig_cursor_table[1], "Search for local games...");
+		Access_MenuItem (1, basex, lanConfig_cursor_table[1], 8 * (int)strlen ("Search for local games..."), 8, &lanConfig_cursor);
 		M_Print (basex, 108, "Join game at:");
 		M_DrawTextBox (basex+8, lanConfig_cursor_table[2]-8, 22, 1);
 		M_Print (basex+16, lanConfig_cursor_table[2], lanConfig_joinname);
+		/* the join field: full width of the drawn 22-char box so it is
+		   clickable even when the name is empty */
+		Access_MenuItem (2, basex+16, lanConfig_cursor_table[2], 22 * 8, 8, &lanConfig_cursor);
 	}
 	else
 	{
 		M_DrawTextBox (basex, lanConfig_cursor_table[1]-8, 2, 1);
 		M_Print (basex+8, lanConfig_cursor_table[1], "OK");
+		Access_MenuItem (1, basex+8, lanConfig_cursor_table[1], 8 * (int)strlen ("OK"), 8, &lanConfig_cursor);
 	}
 
 	M_DrawCharacter (basex-8, lanConfig_cursor_table [lanConfig_cursor], 12+((int)(realtime*4)&1));
@@ -2516,17 +2643,21 @@ void M_GameOptions_Draw (void)
 
 	M_DrawTextBox (152, 32, 10, 1);
 	M_Print (160, 40, "begin game");
+	Access_MenuItem (0, 160, 40, 8 * (int)strlen ("begin game"), 8, &gameoptions_cursor);
 
 	M_Print (0, 56, "      Max players");
+	Access_MenuItem (1, 0, 56, 8 * (int)strlen ("      Max players"), 8, &gameoptions_cursor);
 	M_Print (160, 56, va("%i", maxplayers) );
 
 	M_Print (0, 64, "        Game Type");
+	Access_MenuItem (2, 0, 64, 8 * (int)strlen ("        Game Type"), 8, &gameoptions_cursor);
 	if (coop.value)
 		M_Print (160, 64, "Cooperative");
 	else
 		M_Print (160, 64, "Deathmatch");
 
 	M_Print (0, 72, "        Teamplay");
+	Access_MenuItem (3, 0, 72, 8 * (int)strlen ("        Teamplay"), 8, &gameoptions_cursor);
 	if (rogue)
 	{
 		char *msg;
@@ -2557,6 +2688,7 @@ void M_GameOptions_Draw (void)
 	}
 
 	M_Print (0, 80, "            Skill");
+	Access_MenuItem (4, 0, 80, 8 * (int)strlen ("            Skill"), 8, &gameoptions_cursor);
 	if (skill.value == 0)
 		M_Print (160, 80, "Easy difficulty");
 	else if (skill.value == 1)
@@ -2567,18 +2699,21 @@ void M_GameOptions_Draw (void)
 		M_Print (160, 80, "Nightmare difficulty");
 
 	M_Print (0, 88, "       Frag Limit");
+	Access_MenuItem (5, 0, 88, 8 * (int)strlen ("       Frag Limit"), 8, &gameoptions_cursor);
 	if (fraglimit.value == 0)
 		M_Print (160, 88, "none");
 	else
 		M_Print (160, 88, va("%i frags", (int)fraglimit.value));
 
 	M_Print (0, 96, "       Time Limit");
+	Access_MenuItem (6, 0, 96, 8 * (int)strlen ("       Time Limit"), 8, &gameoptions_cursor);
 	if (timelimit.value == 0)
 		M_Print (160, 96, "none");
 	else
 		M_Print (160, 96, va("%i minutes", (int)timelimit.value));
 
 	M_Print (0, 112, "         Episode");
+	Access_MenuItem (7, 0, 112, 8 * (int)strlen ("         Episode"), 8, &gameoptions_cursor);
    //MED 01/06/97 added hipnotic episodes
    if (hipnotic)
       M_Print (160, 112, hipnoticepisodes[startepisode].description);
@@ -2589,6 +2724,7 @@ void M_GameOptions_Draw (void)
       M_Print (160, 112, episodes[startepisode].description);
 
 	M_Print (0, 120, "           Level");
+	Access_MenuItem (8, 0, 120, 8 * (int)strlen ("           Level"), 8, &gameoptions_cursor);
    //MED 01/06/97 added hipnotic episodes
    if (hipnotic)
    {
@@ -2904,6 +3040,7 @@ void M_ServerList_Draw (void)
 		else
 			sprintf(string, "%-15.15s %-15.15s\n", hostcache[n].name, hostcache[n].map);
 		M_Print (16, 32 + 8*n, string);
+		Access_MenuItem (n, 16, 32 + 8*n, 8 * (int)strlen (string), 8, &slist_cursor);
 	}
 	M_DrawCharacter (0, 32 + slist_cursor*8, 12+((int)(realtime*4)&1));
 
@@ -2983,10 +3120,13 @@ void M_Draw (void)
 	if (m_state == m_none || key_dest != key_menu)
 		return;
 
-	Access_MenuFrame ();
-
 	if (!m_recursiveDraw)
 	{
+		/* not on the recursive quit-dialog pass: a recursive M_Draw must
+		   not reset the frame, or the live click would be cleared before
+		   the quit panel's Access_ClickRect runs */
+		Access_MenuFrame ();
+
 		scr_copyeverything = 1;
 
 		if (scr_con_current)
@@ -3083,6 +3223,8 @@ void M_Draw (void)
 		M_ServerList_Draw ();
 		break;
 	}
+
+	Access_MenuDrawHover ();
 
 	if (m_entersound)
 	{

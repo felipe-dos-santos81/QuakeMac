@@ -757,3 +757,17 @@ int Access_ClickRect (int x, int y, int w, int h)
 	}
 	return 0;
 }
+
+void Access_MenuDrawHover (void)
+{
+	access_menuitem_t	*it;
+
+	if (!access_mouseonly.value || key_dest != key_menu || menu_hover < 0)
+		return;
+	it = &menu_items[menu_hover];
+	/* blink the same marker character the pages use for their cursors,
+	   at the left edge of the hovered item's rect (menu coordinate space,
+	   so apply the same centering offset the M_Draw* helpers use) */
+	Draw_Character (it->x - 8 + ((vid.width - 320) >> 1), it->y,
+	                12 + ((int)(realtime * 4) & 1));
+}

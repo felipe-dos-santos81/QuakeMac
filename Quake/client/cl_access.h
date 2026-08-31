@@ -23,6 +23,7 @@ void Access_MenuFrame (void);
 int  Access_MenuItem (int index, int x, int y, int w, int h, int *cursor);
 int  Access_MenuHovered (int index);
 int  Access_ClickRect (int x, int y, int w, int h);
+void Access_MenuDrawHover (void);
 
 extern cvar_t access_mouseonly;
 
