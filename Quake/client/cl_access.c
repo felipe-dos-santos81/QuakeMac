@@ -455,6 +455,10 @@ void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 
 	access_lastinput = realtime;
 
+	/* diagnostics: which buttons actually reach the engine */
+	if (down)
+		Access_Log (va ("button %s down", Key_KeynumToString (keynum)));
+
 	/* menus: point-and-click; buttons never fire gameplay bindings here */
 	if (key_dest == key_menu)
 	{
