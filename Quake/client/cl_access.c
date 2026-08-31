@@ -1,7 +1,13 @@
 /*
 cl_access.c — mouse-only control: Look/Walk modes, throttle & velocity
-movement profiles, gesture engine, cruise control, safety resets,
-point-and-click menus, HUD feedback.
+movement profiles, gesture engine, safety resets, point-and-click
+menus, HUD feedback.
+
+Control scheme (see configs/autoexec-mouseonly.cfg): MOUSE1 fires, a
+MOUSE1 double-click jumps, MOUSE2 toggles Look/Walk (the boxed HUD
+label is a click fallback). Walk mode moves on Y and sidesteps on X,
+and levels the view on entry. During demo playback any click opens
+the main menu.
 
 Spec: docs/superpowers/specs/2026-08-30-mouse-only-control-design.md
 Plan: docs/superpowers/plans/2026-08-30-mouse-only-control.md
@@ -21,6 +27,12 @@ extern SDL_Window *sdl_window;	/* owned by gl_vidsdl.c */
 #define ACCESS_LOOK 0
 #define ACCESS_WALK 1
 
+/* HUD mode-button geometry, in vid.width x vid.height screen space */
+#define ACCESS_BTN_X 6
+#define ACCESS_BTN_Y 6
+#define ACCESS_BTN_W 44
+#define ACCESS_BTN_H 12
+
 /* ---------------------------------------------------------------- cvars */
 
 cvar_t	access_mouseonly = {"access_mouseonly", "1", true};
@@ -31,9 +43,8 @@ cvar_t	access_deadzone = {"access_deadzone", "0", true};
 cvar_t	access_curve = {"access_curve", "1", true};
 cvar_t	access_walkspeed = {"access_walkspeed", "190", true};
 cvar_t	access_tremor = {"access_tremor", "0", true};
-cvar_t	access_turnrate = {"access_turnrate", "240", true};
 cvar_t	access_throttle_decay = {"access_throttle_decay", "0", true};
-cvar_t	access_toggle_button = {"access_toggle_button", "202", true}; /* K_MOUSE3 */
+cvar_t	access_toggle_button = {"access_toggle_button", "201", true}; /* K_MOUSE2 */
 cvar_t	access_longpress_button = {"access_longpress_button", "0", true};
 cvar_t	access_longpress_ms = {"access_longpress_ms", "400", true};
 cvar_t	access_layer_timeout = {"access_layer_timeout", "3", true};
@@ -42,7 +53,6 @@ cvar_t	access_layer_cmd2 = {"access_layer_cmd2", "togglemenu"};
 cvar_t	access_doubleclick_button = {"access_doubleclick_button", "0", true};
 cvar_t	access_doubleclick_ms = {"access_doubleclick_ms", "350", true};
 cvar_t	access_doubleclick_command = {"access_doubleclick_command", ""};
-cvar_t	access_cruise_speed = {"access_cruise_speed", "0", true};
 cvar_t	access_idle_timeout = {"access_idle_timeout", "0", true};
 cvar_t	access_hud = {"access_hud", "1", true};
 cvar_t	access_sounds = {"access_sounds", "1", true};
@@ -52,7 +62,6 @@ cvar_t	access_log = {"access_log", "1", true};
 
 static int		access_mode = ACCESS_LOOK;
 static float		access_throttle;
-static qboolean		access_cruise;
 static float		tremor_x, tremor_y;	/* low-pass filter state */
 static double		access_lastinput;	/* for the idle timeout (Task 5) */
 static int		access_lasthealth = 100;
@@ -60,11 +69,9 @@ static keydest_t	access_lastdest = key_game;
 
 /* gesture engine */
 static qboolean	gest_down;	/* physical button held */
-static qboolean	gest_pending;	/* a press is held pending */
+static qboolean	gest_pending;	/* a long-press candidate is held pending */
 static unsigned	gest_down_time;	/* ms timestamp of the pending press */
-static qboolean	gest_tap;	/* released tap waiting out the dbl window */
-static int	gest_tap_key;
-static unsigned	gest_tap_time;
+static unsigned	gest_dbltime;	/* ms timestamp of last double-click press */
 
 /* sticky layer */
 static qboolean	access_layer;
@@ -124,11 +131,10 @@ static void Access_ToggleMode_f (void)
 	access_throttle = 0;
 	if (access_mode == ACCESS_WALK)
 	{
-		access_cruise = false;
+	/* entering walk mode levels the view: pitch snaps to the horizon,
+	   yaw keeps whichever way the player was facing */
+		cl.viewangles[PITCH] = 0;
 		access_lastinput = realtime;
-	}
-	if (access_mode == ACCESS_WALK)
-	{
 		Access_Log ("walk mode");
 		Access_Label ("WALK MODE");
 		Access_Sound ("misc/menu1.wav");
@@ -138,31 +144,6 @@ static void Access_ToggleMode_f (void)
 		Access_Log ("look mode");
 		Access_Label ("LOOK MODE");
 		Access_Sound ("misc/menu2.wav");
-	}
-}
-
-static void Access_ToggleCruise_f (void)
-{
-	if (!access_mouseonly.value)
-		return;
-	if (access_mode == ACCESS_WALK)
-	{
-		Access_Log ("cruise refused (walk mode)");
-		Access_Sound ("misc/menu3.wav");
-		return;
-	}
-	access_cruise = !access_cruise;
-	if (access_cruise)
-	{
-		Access_Log ("cruise on");
-		Access_Label ("CRUISE ON");
-		Access_Sound ("misc/menu3.wav");
-	}
-	else
-	{
-		Access_Log ("cruise off");
-		Access_Label ("CRUISE OFF");
-		Access_Sound ("misc/menu3.wav");
 	}
 }
 
@@ -181,7 +162,6 @@ void Access_Init (void)
 	Cvar_RegisterVariable (&access_curve);
 	Cvar_RegisterVariable (&access_walkspeed);
 	Cvar_RegisterVariable (&access_tremor);
-	Cvar_RegisterVariable (&access_turnrate);
 	Cvar_RegisterVariable (&access_throttle_decay);
 	Cvar_RegisterVariable (&access_toggle_button);
 	Cvar_RegisterVariable (&access_longpress_button);
@@ -192,39 +172,35 @@ void Access_Init (void)
 	Cvar_RegisterVariable (&access_doubleclick_button);
 	Cvar_RegisterVariable (&access_doubleclick_ms);
 	Cvar_RegisterVariable (&access_doubleclick_command);
-	Cvar_RegisterVariable (&access_cruise_speed);
 	Cvar_RegisterVariable (&access_idle_timeout);
 	Cvar_RegisterVariable (&access_hud);
 	Cvar_RegisterVariable (&access_sounds);
 	Cvar_RegisterVariable (&access_log);
 
 	Cmd_AddCommand ("access_toggle_mode", Access_ToggleMode_f);
-	Cmd_AddCommand ("access_toggle_cruise", Access_ToggleCruise_f);
 }
 
 void Access_Reset (void)
 {
 	if (!access_mouseonly.value)
 		return;
-	if (access_mode != ACCESS_LOOK || access_cruise)
+	if (access_mode != ACCESS_LOOK)
 	{
 		access_mode = ACCESS_LOOK;
 		access_throttle = 0;
-		access_cruise = false;
 		Access_Log ("reset to look mode");
 	}
 	gest_pending = false;
-	gest_tap = false;
+	gest_dbltime = 0;
 	Access_CloseLayer ();
 }
 
 static void Access_ForceLook (char *reason)
 {
-	if (access_mode == ACCESS_LOOK && !access_cruise)
+	if (access_mode == ACCESS_LOOK)
 		return;
 	access_mode = ACCESS_LOOK;
 	access_throttle = 0;
-	access_cruise = false;
 	Access_Log (va ("forced look mode (%s)", reason));
 	Access_Label ("LOOK MODE");
 	Access_Sound ("misc/menu2.wav");
@@ -233,7 +209,6 @@ static void Access_ForceLook (char *reason)
 void Access_Frame (float frametime)
 {
 	static float	last_mouseonly = -1;
-	float		step;
 
 	/* kill-switch edge: clear transient gesture/layer/mode state whenever
 	   access_mouseonly is toggled, so nothing stale survives an off->on cycle */
@@ -241,11 +216,10 @@ void Access_Frame (float frametime)
 	{
 		last_mouseonly = access_mouseonly.value;
 		gest_pending = false;
-		gest_tap = false;
+		gest_dbltime = 0;
 		access_layer = false;
 		access_mode = ACCESS_LOOK;
 		access_throttle = 0;
-		access_cruise = false;
 		menu_click_pending = false;
 		menu_click_live = false;
 		menu_queued_key = 0;
@@ -262,18 +236,6 @@ void Access_Frame (float frametime)
 		menu_click_live = false;
 		menu_queued_key = 0;
 		menu_queued_cursor = NULL;
-	}
-
-	/* Walk mode: pitch stays level — ease toward the horizon */
-	if (access_mode == ACCESS_WALK)
-	{
-		step = 120.0f * frametime;
-		if (cl.viewangles[PITCH] > step)
-			cl.viewangles[PITCH] -= step;
-		else if (cl.viewangles[PITCH] < -step)
-			cl.viewangles[PITCH] += step;
-		else
-			cl.viewangles[PITCH] = 0;
 	}
 
 	/* safety: death */
@@ -299,7 +261,6 @@ void Access_Frame (float frametime)
 	/* gesture timers */
 	{
 		unsigned	now = (unsigned)SDL_GetTicks ();
-		unsigned	dbl = (unsigned)access_doubleclick_ms.value;
 
 		/* long-press threshold crossed: discard the press, open the layer */
 		if (gest_pending && gest_down
@@ -310,14 +271,6 @@ void Access_Frame (float frametime)
 			Access_Log (va ("long-press on %s",
 			                Key_KeynumToString ((int)access_longpress_button.value)));
 			Access_OpenLayer ();
-		}
-
-		/* a tap that survived the double-click window is delivered */
-		if (gest_tap && now - gest_tap_time > dbl)
-		{
-			gest_tap = false;
-			Key_Event (gest_tap_key, true);
-			Key_Event (gest_tap_key, false);
 		}
 
 		if (access_layer && realtime > access_layer_until)
@@ -353,20 +306,6 @@ static void Access_CloseLayer (void)
 
 static qboolean Access_GestureButton (int keynum)
 {
-	static qboolean	warned_fire;
-
-	/* never-on-fire rule: double-click on MOUSE1 is rejected */
-	if (keynum == K_MOUSE1
-	    && keynum == (int)access_doubleclick_button.value)
-	{
-		if (!warned_fire)
-		{
-			Con_Printf ("access: double-click on MOUSE1 (fire) is not allowed; ignoring\n");
-			warned_fire = true;
-		}
-		return false;
-	}
-
 	if (keynum == (int)access_longpress_button.value
 	    && access_longpress_button.value >= K_MOUSE1)
 		return true;
@@ -383,20 +322,40 @@ static void Access_GestureEvent (int keynum, int down, unsigned int ms)
 	if (down)
 	{
 		gest_down = true;
-		if (gest_tap && keynum == gest_tap_key
-		    && keynum == (int)access_doubleclick_button.value
-		    && ms - gest_tap_time <= dbl)
+
+	/* long-press button: hold the press until the threshold */
+		if (keynum == (int)access_longpress_button.value
+		    && access_longpress_button.value >= K_MOUSE1)
 		{
-		/* second press inside the window: run the command, eat both */
-			gest_tap = false;
-			gest_pending = false;
-			Access_Log (va ("double-click on %s", Key_KeynumToString (keynum)));
-			if (access_doubleclick_command.string[0])
-				Cbuf_AddText (va ("%s\n", access_doubleclick_command.string));
+			gest_pending = true;
+			gest_down_time = ms;
 			return;
 		}
-		gest_pending = true;
-		gest_down_time = ms;
+
+	/* double-click button: presses are always delivered immediately so
+	   fire is never delayed by the double-click wait; a second press
+	   inside the window additionally runs the double-click command */
+		if (keynum == (int)access_doubleclick_button.value
+		    && access_doubleclick_button.value >= K_MOUSE1)
+		{
+			if (gest_dbltime && ms - gest_dbltime <= dbl)
+			{
+			/* a clean pair is consumed; reset so the next press
+			   starts a new window instead of pairing with this one */
+				gest_dbltime = 0;
+				Access_Log (va ("double-click on %s",
+				                Key_KeynumToString (keynum)));
+				if (access_doubleclick_command.string[0])
+					Cbuf_AddText (va ("%s\n",
+					                  access_doubleclick_command.string));
+			}
+			else
+				gest_dbltime = ms;
+			Key_Event (keynum, true);
+			return;
+		}
+
+		Key_Event (keynum, true);
 		return;
 	}
 
@@ -404,20 +363,11 @@ static void Access_GestureEvent (int keynum, int down, unsigned int ms)
 	gest_down = false;
 	if (!gest_pending)
 	{
-		Key_Event (keynum, down);	/* release of a consumed press */
+		Key_Event (keynum, down);	/* release of a consumed or plain press */
 		return;
 	}
 	gest_pending = false;
-	if (keynum == (int)access_doubleclick_button.value
-	    && access_doubleclick_button.value >= K_MOUSE1)
-	{
-		/* hold the tap: a second press may still claim it */
-		gest_tap = true;
-		gest_tap_key = keynum;
-		gest_tap_time = ms;
-		return;
-	}
-	/* plain long-press button, released early: deliver the press */
+	/* long-press button released before the threshold: deliver the press */
 	Key_Event (keynum, true);
 	Key_Event (keynum, false);
 }
@@ -445,6 +395,28 @@ static void Access_MenuButton (int keynum, int down)
 	}
 }
 
+/*
+The HUD mode button lives in vid.width x vid.height screen space. The
+OS cursor is never grabbed in this port, so its window coordinates map
+to screen space the same way Access_MenuFrame maps the menu cursor —
+minus the 320-based offset, because the HUD draws in raw vid coords.
+*/
+static qboolean Access_CursorInButton (void)
+{
+	float	cx, cy;
+	int	ww, wh;
+
+	SDL_GetMouseState (&cx, &cy);
+	SDL_GetWindowSize (sdl_window, &ww, &wh);
+	if (ww <= 0 || wh <= 0)
+		return false;
+	cx = cx * (float)vid.width / ww;
+	cy = cy * (float)vid.height / wh;
+
+	return cx >= ACCESS_BTN_X - 2 && cx < ACCESS_BTN_X + ACCESS_BTN_W + 2
+	    && cy >= ACCESS_BTN_Y - 2 && cy < ACCESS_BTN_Y + ACCESS_BTN_H + 2;
+}
+
 void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 {
 	if (!access_mouseonly.value)
@@ -455,10 +427,6 @@ void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 
 	access_lastinput = realtime;
 
-	/* diagnostics: which buttons actually reach the engine */
-	if (down)
-		Access_Log (va ("button %s down", Key_KeynumToString (keynum)));
-
 	/* menus: point-and-click; buttons never fire gameplay bindings here */
 	if (key_dest == key_menu)
 	{
@@ -468,6 +436,23 @@ void Access_ButtonEvent (int keynum, int down, unsigned int ms)
 			Key_Event (keynum, false);	/* releases must clear keydown[] */
 		else
 			Access_MenuButton (keynum, down);
+		return;
+	}
+
+	/* demo playback: a click opens the main menu, exactly like the
+	   keyboard keys do in Key_Event */
+	if (cls.demoplayback)
+	{
+		if (down)
+			M_ToggleMenu_f ();
+		return;
+	}
+
+	/* HUD mode button: clicking the boxed LOOK/WALK label toggles —
+	   the fallback for devices whose right button cannot be used */
+	if (down && key_dest == key_game && Access_CursorInButton ())
+	{
+		Access_ToggleMode_f ();
 		return;
 	}
 
@@ -538,6 +523,10 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 	if (!access_mouseonly.value)
 		return;
 
+	/* demos drive the view themselves; local input must not fight them */
+	if (cls.demoplayback)
+		return;
+
 	fx = mx * sensitivity.value;
 	fy = my * sensitivity.value;
 
@@ -566,29 +555,13 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 	{
 		V_StopPitchDrift ();
 
-	/* X: turn, or sidestep while +strafe is held */
-		if (in_strafe.state & 1)
-		{
-			v = Access_Curve (fx) * m_side.value;
-			if (v > cl_sidespeed.value)
-				v = cl_sidespeed.value;
-			else if (v < -cl_sidespeed.value)
-				v = -cl_sidespeed.value;
-			cmd->sidemove += v;
-		}
-		else
-		{
-			v = fx * m_yaw.value;
-			if (access_turnrate.value > 0)
-			{
-				cap = access_turnrate.value * (float)host_frametime;
-				if (v > cap)
-					v = cap;
-				else if (v < -cap)
-					v = -cap;
-			}
-			cl.viewangles[YAW] -= v;
-		}
+	/* X: sidestep */
+		v = Access_Curve (fx) * m_side.value;
+		if (v > cl_sidespeed.value)
+			v = cl_sidespeed.value;
+		else if (v < -cl_sidespeed.value)
+			v = -cl_sidespeed.value;
+		cmd->sidemove += v;
 
 	/* Y: movement */
 		cap = Access_WalkSpeedCap ();
@@ -634,19 +607,6 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 		cl.viewangles[PITCH] = 80;
 	if (cl.viewangles[PITCH] < -70)
 		cl.viewangles[PITCH] = -70;
-
-	/* cruise: constant forward in Look mode */
-	if (access_cruise)
-	{
-		v = (access_cruise_speed.value > 0) ? access_cruise_speed.value
-		                                    : cl_forwardspeed.value;
-		cmd->forwardmove += v;
-		if (cmd->forwardmove <= 0)
-		{
-			access_cruise = false;
-			Access_Log ("cruise cancelled (backward input)");
-		}
-	}
 }
 
 /* ----------------------------------------------------------------- HUD */
@@ -654,24 +614,35 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 void Access_DrawHUD (void)
 {
 	char	line[40];
+	qboolean	hover;
 	int	x, y, w, mid, fill;
 
 	if (!access_mouseonly.value || !access_hud.value)
 		return;
-	if (key_dest != key_game)
+	if (key_dest != key_game || cls.demoplayback)
 		return;
 
 	x = 8;
 	y = 8;
 
 	Q_strcpy (line, access_mode == ACCESS_WALK ? "WALK" : "LOOK");
-	if (access_cruise)
-		Q_strcpy (line + Q_strlen (line), " CRUISE");
+
+	/* clickable mode button: boxed label. Hover brightens the frame and
+	   shows the blinking marker the menus use; the click itself is
+	   handled in Access_ButtonEvent */
+	hover = Access_CursorInButton ();
+	Draw_Fill (ACCESS_BTN_X, ACCESS_BTN_Y, ACCESS_BTN_W, ACCESS_BTN_H,
+	           hover ? 15 : 12);
+	Draw_Fill (ACCESS_BTN_X + 1, ACCESS_BTN_Y + 1,
+	           ACCESS_BTN_W - 2, ACCESS_BTN_H - 2, 0);
+	if (hover)
+		Draw_Character (ACCESS_BTN_X + ACCESS_BTN_W + 2, ACCESS_BTN_Y + 2,
+		                12 + ((int)(realtime * 4) & 1));
 	Draw_String (x, y, line);
 
 	/* throttle bar */
 	w = 64;
-	y += 10;
+	y += 12;
 	Draw_Fill (x, y, w, 4, 0);		/* background (palette index 0) */
 	mid = x + w / 2;
 	Draw_Fill (mid, y, 1, 4, 15);		/* center notch */
@@ -683,8 +654,6 @@ void Access_DrawHUD (void)
 		else if (fill < 0)
 			Draw_Fill (mid + fill, y, -fill, 4, 12);
 	}
-	else if (access_cruise)
-		Draw_Fill (x, y, w, 4, 12);
 
 	/* transient mode label, centered in the 2D space (vid.width may be
 	   640 — never assume 320) */

@@ -85,7 +85,7 @@ void M_ServerList_Key (int key);
 
 extern cvar_t	access_mouseonly, access_move_profile, access_throttle_gain;
 extern cvar_t	access_velocity_gain, access_deadzone, access_curve;
-extern cvar_t	access_walkspeed, access_tremor, access_turnrate;
+extern cvar_t	access_walkspeed, access_tremor;
 extern cvar_t	access_throttle_decay, access_toggle_button, access_longpress_ms;
 extern cvar_t	access_idle_timeout, access_hud, access_sounds;
 extern cvar_t	sv_aim, cl_bob, cl_rollangle, v_kicktime;
@@ -1627,7 +1627,7 @@ void M_Video_Key (int key)
 //=============================================================================
 /* MOUSE-ONLY MENU */
 
-#define	MOUSE_ITEMS	21
+#define	MOUSE_ITEMS	20
 
 int		mouse_cursor;
 
@@ -1648,16 +1648,15 @@ static float Mouse_SliderRange (int item, float value)
 	case 5: return (access_curve.value - 0.25f) / 3.75f;
 	case 6: return (access_walkspeed.value - 50) / 340.0f;
 	case 7: return access_tremor.value / 0.95f;
-	case 8: return access_turnrate.value / 720.0f;
-	case 9: return access_throttle_decay.value / 3.0f;
-	case 11: return (access_longpress_ms.value - 100) / 1400.0f;
-	case 12: return access_idle_timeout.value / 30.0f;
-	case 15: return (sv_aim.value - 0.5f) / 0.5f;
-	case 16: return cl_bob.value / 0.05f;
-	case 17: return cl_rollangle.value / 2.0f;
-	case 18: return v_kicktime.value / 0.5f;
-	case 19: return (host_timescale.value - 0.25f) / 1.25f;
-	case 20: return (host_maxfps.value - 30) / 114.0f;
+	case 8: return access_throttle_decay.value / 3.0f;
+	case 10: return (access_longpress_ms.value - 100) / 1400.0f;
+	case 11: return access_idle_timeout.value / 30.0f;
+	case 14: return (sv_aim.value - 0.5f) / 0.5f;
+	case 15: return cl_bob.value / 0.05f;
+	case 16: return cl_rollangle.value / 2.0f;
+	case 17: return v_kicktime.value / 0.5f;
+	case 18: return (host_timescale.value - 0.25f) / 1.25f;
+	case 19: return (host_maxfps.value - 30) / 114.0f;
 	}
 	return 0;
 }
@@ -1705,16 +1704,11 @@ static void M_AdjustMouse (int dir)
 		if (access_tremor.value > 0.95) Cvar_SetValue ("access_tremor", 0.95);
 		break;
 	case 8:
-		Cvar_SetValue ("access_turnrate", access_turnrate.value + dir * 30);
-		if (access_turnrate.value < 0) Cvar_SetValue ("access_turnrate", 0);
-		if (access_turnrate.value > 720) Cvar_SetValue ("access_turnrate", 720);
-		break;
-	case 9:
 		Cvar_SetValue ("access_throttle_decay", access_throttle_decay.value + dir * 0.1);
 		if (access_throttle_decay.value < 0) Cvar_SetValue ("access_throttle_decay", 0);
 		if (access_throttle_decay.value > 3) Cvar_SetValue ("access_throttle_decay", 3);
 		break;
-	case 10:	/* toggle button: cycle MOUSE1..MOUSE5 */
+	case 9:	/* toggle button: cycle MOUSE1..MOUSE5 */
 	{
 		int	b = (int)access_toggle_button.value + dir;
 		if (b < K_MOUSE1) b = K_MOUSE5;
@@ -1722,48 +1716,48 @@ static void M_AdjustMouse (int dir)
 		Cvar_SetValue ("access_toggle_button", b);
 		break;
 	}
-	case 11:
+	case 10:
 		Cvar_SetValue ("access_longpress_ms", access_longpress_ms.value + dir * 50);
 		if (access_longpress_ms.value < 100) Cvar_SetValue ("access_longpress_ms", 100);
 		if (access_longpress_ms.value > 1500) Cvar_SetValue ("access_longpress_ms", 1500);
 		break;
-	case 12:
+	case 11:
 		Cvar_SetValue ("access_idle_timeout", access_idle_timeout.value + dir);
 		if (access_idle_timeout.value < 0) Cvar_SetValue ("access_idle_timeout", 0);
 		if (access_idle_timeout.value > 30) Cvar_SetValue ("access_idle_timeout", 30);
 		break;
-	case 13:
+	case 12:
 		Cvar_SetValue ("access_hud", !access_hud.value);
 		break;
-	case 14:
+	case 13:
 		Cvar_SetValue ("access_sounds", !access_sounds.value);
 		break;
-	case 15:
+	case 14:
 		Cvar_SetValue ("sv_aim", sv_aim.value + dir * 0.01);
 		if (sv_aim.value < 0.5) Cvar_SetValue ("sv_aim", 0.5);
 		if (sv_aim.value > 1) Cvar_SetValue ("sv_aim", 1);
 		break;
-	case 16:
+	case 15:
 		Cvar_SetValue ("cl_bob", cl_bob.value + dir * 0.005);
 		if (cl_bob.value < 0) Cvar_SetValue ("cl_bob", 0);
 		if (cl_bob.value > 0.05) Cvar_SetValue ("cl_bob", 0.05);
 		break;
-	case 17:
+	case 16:
 		Cvar_SetValue ("cl_rollangle", cl_rollangle.value + dir * 0.5);
 		if (cl_rollangle.value < 0) Cvar_SetValue ("cl_rollangle", 0);
 		if (cl_rollangle.value > 2) Cvar_SetValue ("cl_rollangle", 2);
 		break;
-	case 18:
+	case 17:
 		Cvar_SetValue ("v_kicktime", v_kicktime.value + dir * 0.05);
 		if (v_kicktime.value < 0) Cvar_SetValue ("v_kicktime", 0);
 		if (v_kicktime.value > 0.5) Cvar_SetValue ("v_kicktime", 0.5);
 		break;
-	case 19:
+	case 18:
 		Cvar_SetValue ("host_timescale", host_timescale.value + dir * 0.05);
 		if (host_timescale.value < 0.25) Cvar_SetValue ("host_timescale", 0.25);
 		if (host_timescale.value > 1.5) Cvar_SetValue ("host_timescale", 1.5);
 		break;
-	case 20:
+	case 19:
 		Cvar_SetValue ("host_maxfps", host_maxfps.value + dir * 6);
 		if (host_maxfps.value < 30) Cvar_SetValue ("host_maxfps", 30);
 		if (host_maxfps.value > 144) Cvar_SetValue ("host_maxfps", 144);
@@ -1800,44 +1794,41 @@ void M_Mouse_Draw (void)
 	M_Print (16, y0 + 8*7,  "      Tremor filter");
 	M_DrawSlider (220, y0 + 8*7, Mouse_SliderRange (7, 0));
 
-	M_Print (16, y0 + 8*8,  "   Walk turn-rate cap");
+	M_Print (16, y0 + 8*8,  "      Throttle decay");
 	M_DrawSlider (220, y0 + 8*8, Mouse_SliderRange (8, 0));
 
-	M_Print (16, y0 + 8*9,  "      Throttle decay");
-	M_DrawSlider (220, y0 + 8*9, Mouse_SliderRange (9, 0));
+	M_Print (16, y0 + 8*9,  "        Toggle button");
+	M_Print (220, y0 + 8*9, Key_KeynumToString ((int)access_toggle_button.value));
 
-	M_Print (16, y0 + 8*10, "        Toggle button");
-	M_Print (220, y0 + 8*10, Key_KeynumToString ((int)access_toggle_button.value));
+	M_Print (16, y0 + 8*10, "      Long-press (ms)");
+	M_DrawSlider (220, y0 + 8*10, Mouse_SliderRange (10, 0));
 
-	M_Print (16, y0 + 8*11, "      Long-press (ms)");
+	M_Print (16, y0 + 8*11, " Idle timeout (s,0=off)");
 	M_DrawSlider (220, y0 + 8*11, Mouse_SliderRange (11, 0));
 
-	M_Print (16, y0 + 8*12, " Idle timeout (s,0=off)");
-	M_DrawSlider (220, y0 + 8*12, Mouse_SliderRange (12, 0));
+	M_Print (16, y0 + 8*12, "          HUD display");
+	M_DrawCheckbox (220, y0 + 8*12, access_hud.value);
 
-	M_Print (16, y0 + 8*13, "          HUD display");
-	M_DrawCheckbox (220, y0 + 8*13, access_hud.value);
+	M_Print (16, y0 + 8*13, "       Sounds");
+	M_DrawCheckbox (220, y0 + 8*13, access_sounds.value);
 
-	M_Print (16, y0 + 8*14, "       Sounds");
-	M_DrawCheckbox (220, y0 + 8*14, access_sounds.value);
+	M_Print (16, y0 + 8*14, "     Vertical auto-aim");
+	M_DrawSlider (220, y0 + 8*14, Mouse_SliderRange (14, 0));
 
-	M_Print (16, y0 + 8*15, "     Vertical auto-aim");
+	M_Print (16, y0 + 8*15, "             View bob");
 	M_DrawSlider (220, y0 + 8*15, Mouse_SliderRange (15, 0));
 
-	M_Print (16, y0 + 8*16, "             View bob");
+	M_Print (16, y0 + 8*16, "       View roll angle");
 	M_DrawSlider (220, y0 + 8*16, Mouse_SliderRange (16, 0));
 
-	M_Print (16, y0 + 8*17, "       View roll angle");
+	M_Print (16, y0 + 8*17, "       Damage kick time");
 	M_DrawSlider (220, y0 + 8*17, Mouse_SliderRange (17, 0));
 
-	M_Print (16, y0 + 8*18, "       Damage kick time");
+	M_Print (16, y0 + 8*18, "        Time scale");
 	M_DrawSlider (220, y0 + 8*18, Mouse_SliderRange (18, 0));
 
-	M_Print (16, y0 + 8*19, "        Time scale");
+	M_Print (16, y0 + 8*19, "          Max FPS");
 	M_DrawSlider (220, y0 + 8*19, Mouse_SliderRange (19, 0));
-
-	M_Print (16, y0 + 8*20, "          Max FPS");
-	M_DrawSlider (220, y0 + 8*20, Mouse_SliderRange (20, 0));
 
 	/* registration for point-and-click. Label area is the item —
 	   click = Enter = default action. Rows with a control at x=220
@@ -1850,7 +1841,7 @@ void M_Mouse_Draw (void)
 		   and adjacent rows' padded rects merely touch — one click, one
 		   action */
 		Access_MenuItem (i, 16, y0 + 8*i, 194, 4, &mouse_cursor);
-		if (i >= 2 && i != 13 && i != 14)
+		if (i >= 2 && i != 12 && i != 13)
 		{
 			if (Access_ClickRect (212, y0 + 8*i, 52, 8))
 			{
