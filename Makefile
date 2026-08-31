@@ -73,7 +73,10 @@ QW_CLIENT_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 # snd_mixa/sys_dosa; cd_linux→cd_null; snd_linux & gl_vidlinuxglx moved to
 # QUAKE_PLATFORM_OBJS as their SDL3 replacements, with in_sdl.o split out of
 # gl_vidsdl.c as a separate input module; cd_null.o and sys_unix.o joined
-# QUAKE_PLATFORM_OBJS in the module-folder restructure)
+# QUAKE_PLATFORM_OBJS in the module-folder restructure). cl_access.o is new
+# to this list (mouse-only control module, 2026-08-30 — no vanilla
+# counterpart; spec docs/superpowers/specs/2026-08-30-mouse-only-control-
+# design.md).
 QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/client/cl_access.o $(QUAKE_BUILDDIR)/client/cl_demo.o \
 	$(QUAKE_BUILDDIR)/client/cl_input.o \

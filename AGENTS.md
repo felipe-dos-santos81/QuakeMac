@@ -22,6 +22,11 @@ for educational purposes only. Three binaries: `glquake` (`Quake/`),
   overrides under `game/id1/` (and `game/qw/` for QW) are game data
   too — same rule; the committed pipeline that produces them lives in
   `tools/` (decoupled, Pillow-only).
+- Mouse-only control (accessibility): glquake-only module
+  `Quake/client/cl_access.c`, kill switch `access_mouseonly`; the
+  committed default config `configs/autoexec-mouseonly.cfg` is meant
+  to be copied to `game/id1/autoexec.cfg` at runtime (game data —
+  never committed there).
 - Specs, plans, and the append-only Fixes Ledger:
   `docs/superpowers/`.
 - License: GPL, see `gnu.txt`.

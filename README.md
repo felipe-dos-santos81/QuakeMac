@@ -101,7 +101,8 @@ data and is never committed.
 
 Design specs, implementation plans, and the running Fixes Ledger live in
 `docs/superpowers/` (port spec/plan dated 2026-08-29, dead-code cleanup
-dated 2026-08-30, external texture overrides dated 2026-08-30).
+dated 2026-08-30, external texture overrides dated 2026-08-30,
+mouse-only control dated 2026-08-30).
 
 ## Mouse-only play (accessibility)
 
@@ -124,4 +125,6 @@ including menus and saving. Copy `configs/autoexec-mouseonly.cfg` to
   of the cfg (double-click toggles modes, long-press opens a sticky
   layer: next click = quicksave, next = menu).
 - The cursor is never locked; keep the window focused for motion
-  input. `access_mouseonly 0` restores stock input.
+  input. `access_mouseonly 0` restores stock input behavior; the
+  wheel still scrolls menus/console and Options keeps its Mouse-only
+  row (both live outside the kill switch by design).
