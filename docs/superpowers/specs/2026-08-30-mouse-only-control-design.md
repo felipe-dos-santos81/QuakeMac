@@ -413,3 +413,40 @@ the 3-binary SIGKILL smoke protocol ("Received signal" count 0).
 - **`host_maxfps` set above 72** changes vanilla server physics
   timing: README notes 72 is the fidelity value; the cvar exists to
   pin, not to overclock.
+
+---
+
+## Revision 2026-08-31 — control scheme redesign (supersedes above)
+
+Post-release feedback showed the original scheme mismatched user
+expectations: the mode toggle sat on the wheel click while the right
+button toggled cruise, so right-clicking to walk activated cruise
+instead (HUD read "look cruise"; no backward path existed in that
+state). The sections above are retained as history; the live scheme:
+
+- MOUSE1 fires; double-click MOUSE1 jumps (`access_doubleclick_button
+  200`, command `+jump; wait; -jump` — the vanilla one-frame jump
+  idiom, Cmd_Wait_f in common/cmd.c). The never-on-fire rule is
+  lifted: presses are delivered immediately, so fire is never delayed
+  by the double-click window.
+- MOUSE2 (right button, `access_toggle_button` default 201) toggles
+  Look/Walk.
+- Entering Walk mode levels the view: pitch snaps to the horizon
+  instantly, yaw keeps whichever way the player faced. Walk mode:
+  Y = forward/backward throttle, X = sidestep (capped at
+  cl_sidespeed). There is no turning in Walk mode — Look mode turns.
+- Cruise control is removed (cvars, command, HUD tag, logic).
+- `access_turnrate` is removed with the Walk-mode turn; the Mouse
+  options page lost its turn-rate row (MOUSE_ITEMS 21 → 20, items
+  renumbered).
+- HUD: the boxed LOOK/WALK label is clickable — a toggle fallback for
+  devices whose right button cannot be used; hover brightens the
+  frame. The access HUD is suppressed during demo playback.
+- Demo playback: any mouse click opens the main menu, mirroring what
+  keyboard keys already do in Key_Event (keys.c).
+- The wheel and side buttons are unused: config drops the wheel
+  weapon-cycle, MOUSE4 strafe, and MOUSE5 jump bindings. Consequence:
+  no mouse-driven weapon switching.
+
+Build gate unchanged: `make clean && make build-release build-server
+build-client`.

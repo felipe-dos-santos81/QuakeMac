@@ -1017,3 +1017,25 @@ configs/autoexec-mouseonly.cfg. QuakeWorld untouched.
 Validation: pending manual session (kill-switch parity +
 mouse-only functional loop) and tester sessions (E1M1 protocol,
 plan Task 12 Step 5).
+
+### Mouse-only control v2 — control scheme redesign (fix + redesign)
+Commits: e11a02f. Spec revision:
+docs/superpowers/specs/2026-08-30-mouse-only-control-design.md,
+"Revision 2026-08-31" section.
+Root cause of the "walking back not working" report: v1 put the mode
+toggle on the wheel click and cruise on the right button; the user
+right-clicked to enter Walk mode, which toggled cruise instead (HUD
+read "look cruise"), leaving no backward path. New scheme: right
+button (access_toggle_button default 202 → 201) toggles Look/Walk;
+double-click MOUSE1 jumps (never-on-fire rule lifted, presses
+delivered immediately, command "+jump; wait; -jump"); entering Walk
+mode snaps pitch to the horizon (gradual ease removed); Walk-mode X
+sidesteps instead of turning (access_turnrate deleted, Mouse options
+page renumbered MOUSE_ITEMS 21 → 20); cruise control deleted (cvars,
+command, HUD tag, logic); boxed HUD mode label is a clickable toggle
+fallback; any click during demo playback opens the main menu and the
+access HUD is suppressed; config drops wheel and side-button
+bindings (no mouse-driven weapon switching). QuakeWorld untouched;
+kill switch access_mouseonly unchanged.
+Validation: make clean && make build-release build-server
+build-client (exit 0); manual session pending.
