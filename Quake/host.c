@@ -55,6 +55,8 @@ byte		*host_basepal;
 byte		*host_colormap;
 
 cvar_t	host_framerate = {"host_framerate","0"};	// set for slow motion
+cvar_t	host_maxfps = {"host_maxfps","72"};		// frame-rate cap for Host_FilterTime
+cvar_t	host_timescale = {"host_timescale","1"};	// scale simulation time (accessibility slow-down)
 cvar_t	host_speeds = {"host_speeds","0"};			// set for running times
 
 cvar_t	sys_ticrate = {"sys_ticrate","0.05"};
@@ -211,6 +213,8 @@ void Host_InitLocal (void)
 	Host_InitCommands ();
 	
 	Cvar_RegisterVariable (&host_framerate);
+	Cvar_RegisterVariable (&host_maxfps);
+	Cvar_RegisterVariable (&host_timescale);
 	Cvar_RegisterVariable (&host_speeds);
 
 	Cvar_RegisterVariable (&sys_ticrate);
@@ -500,9 +504,15 @@ Returns false if the time is too short to run a frame
 */
 qboolean Host_FilterTime (float time)
 {
+	float		fpscap;
+
 	realtime += time;
 
-	if (!cls.timedemo && realtime - oldrealtime < 1.0/72.0)
+	fpscap = host_maxfps.value;
+	if (fpscap < 10)
+		fpscap = 10;
+
+	if (!cls.timedemo && realtime - oldrealtime < 1.0/fpscap)
 		return false;		// framerate is too high
 
 	host_frametime = realtime - oldrealtime;
@@ -646,7 +656,11 @@ void _Host_Frame (float time)
 // decide the simulation time
 	if (!Host_FilterTime (time))
 		return;			// don't run too fast, or packets will flood out
-		
+
+// accessibility slow-down: scale simulation time without dropping frames
+	if (host_timescale.value > 0 && host_timescale.value != 1)
+		host_frametime *= host_timescale.value;
+
 // get new key events
 	Sys_SendKeyEvents ();
 
