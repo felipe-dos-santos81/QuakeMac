@@ -64,12 +64,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	K_MOUSE1		200
 #define	K_MOUSE2		201
 #define	K_MOUSE3		202
+#define	K_MOUSE4		203
+#define	K_MOUSE5		204
 
 //
-// joystick buttons
+// joystick buttons (K_JOY1/K_JOY2 slots now belong to K_MOUSE4/5;
+// the rest stay orphaned until a separate cleanup)
 //
-#define	K_JOY1			203
-#define	K_JOY2			204
 #define	K_JOY3			205
 #define	K_JOY4			206
 

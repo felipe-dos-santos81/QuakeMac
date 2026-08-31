@@ -91,9 +91,9 @@ keyname_t keynames[] =
 	{"MOUSE1", K_MOUSE1},
 	{"MOUSE2", K_MOUSE2},
 	{"MOUSE3", K_MOUSE3},
+	{"MOUSE4", K_MOUSE4},
+	{"MOUSE5", K_MOUSE5},
 
-	{"JOY1", K_JOY1},
-	{"JOY2", K_JOY2},
 	{"JOY3", K_JOY3},
 	{"JOY4", K_JOY4},
 

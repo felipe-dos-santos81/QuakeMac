@@ -170,8 +170,25 @@ static void HandleEvents(void)
 				b = 2;
 			else if (event.button.button == SDL_BUTTON_RIGHT)
 				b = 1;
+			else if (event.button.button == SDL_BUTTON_X1)
+				b = 3;
+			else if (event.button.button == SDL_BUTTON_X2)
+				b = 4;
 			if (b >= 0)
 				Key_Event(K_MOUSE1 + b, event.button.down);
+			break;
+
+		case SDL_EVENT_MOUSE_WHEEL:
+			if (event.wheel.y > 0)
+			{
+				Key_Event(K_MWHEELUP, true);
+				Key_Event(K_MWHEELUP, false);
+			}
+			else if (event.wheel.y < 0)
+			{
+				Key_Event(K_MWHEELDOWN, true);
+				Key_Event(K_MWHEELDOWN, false);
+			}
 			break;
 
 		case SDL_EVENT_QUIT:
