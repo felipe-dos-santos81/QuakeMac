@@ -13,7 +13,7 @@
 # glqwcl.glx vid object; every object gets -DGLQUAKE (as DO_GL_CC did);
 # asm objects (math/snd_mixa/sys_dosa) omitted for arm64;
 # cd_linux->cd_null, snd_linux->snd_sdl, gl_vidlinuxglx->gl_vidsdl.
-# Spec: docs/superpowers/specs/2026-08-29-quake-apple-silicon-design.md
+# Spec: docs/superpowers/2026-08-29-quake-apple-silicon.md
 
 SERVICE = Quake + QuakeWorld (macOS arm64)
 
@@ -75,8 +75,7 @@ QW_CLIENT_LDFLAGS        = $(SDL_LIBS) $(GL_LIBS) -lm
 # gl_vidsdl.c as a separate input module; cd_null.o and sys_unix.o joined
 # QUAKE_PLATFORM_OBJS in the module-folder restructure). cl_access.o is new
 # to this list (mouse-only control module, 2026-08-30 — no vanilla
-# counterpart; spec docs/superpowers/specs/2026-08-30-mouse-only-control-
-# design.md).
+# counterpart; spec docs/superpowers/2026-08-30-mouse-only-control.md).
 QUAKE_CORE_OBJS = \
 	$(QUAKE_BUILDDIR)/client/cl_access.o $(QUAKE_BUILDDIR)/client/cl_demo.o \
 	$(QUAKE_BUILDDIR)/client/cl_input.o \

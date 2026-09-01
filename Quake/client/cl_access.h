@@ -2,7 +2,7 @@
 cl_access.h — mouse-only control (accessibility) module interface.
 
 Every entry point degrades to vanilla behavior when access_mouseonly
-is 0. Spec: docs/superpowers/specs/2026-08-30-mouse-only-control-design.md
+is 0. Spec: docs/superpowers/2026-08-30-mouse-only-control.md
 
 Engine convention: the including .c has already included quakedef.h
 (this header deliberately includes nothing; quakedef.h has no guard).

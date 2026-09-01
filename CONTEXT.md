@@ -39,8 +39,8 @@ reviews should use these names.
   demo playback any click opens the main menu. Default config
   `configs/autoexec-mouseonly.cfg` is copied to
   `game/id1/autoexec.cfg` at runtime (game data — never committed).
-  Spec: `docs/superpowers/specs/2026-08-30-mouse-only-control-
-  design.md` ("Revision 2026-08-31" section).
+  Spec: `docs/superpowers/2026-08-30-mouse-only-control.md`
+  ("Revision 2026-08-31" section).
 - **Game data** — `game/id1/` feeds glquake; `game/qw/` feeds
   qwsv/glqwcl; both QuakeWorld binaries mount id1 and qw at startup.
   Loose TGA overrides under `game/id1/` (and `game/qw/` for QW) are game data
@@ -49,5 +49,5 @@ reviews should use these names.
 - **Gates** — the build oracle (`make clean && make build-release
   build-server build-client` from the repo root), the 3-binary SIGKILL
   smoke protocol ("Received signal" count must be 0), and the Fixes
-  Ledger (append-only record of every pass, in
-  `docs/superpowers/plans/2026-08-29-quake-apple-silicon.md`).
+  Ledger (append-only record of every pass, at the end of
+  `docs/superpowers/2026-08-29-quake-apple-silicon.md`).

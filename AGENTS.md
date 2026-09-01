@@ -28,5 +28,7 @@ for educational purposes only. Three binaries: `glquake` (`Quake/`),
   to be copied to `game/id1/autoexec.cfg` at runtime (game data —
   never committed there).
 - Specs, plans, and the append-only Fixes Ledger:
-  `docs/superpowers/`.
+  `docs/superpowers/` — one file per feature (design spec, then
+  implementation plan); the ledger is appended at the end of
+  `2026-08-29-quake-apple-silicon.md`.
 - License: GPL, see `gnu.txt`.

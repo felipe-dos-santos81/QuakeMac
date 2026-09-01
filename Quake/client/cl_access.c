@@ -9,8 +9,7 @@ label is a click fallback). Walk mode moves on Y and sidesteps on X,
 and levels the view on entry. During demo playback any click opens
 the main menu.
 
-Spec: docs/superpowers/specs/2026-08-30-mouse-only-control-design.md
-Plan: docs/superpowers/plans/2026-08-30-mouse-only-control.md
+Spec + plan: docs/superpowers/2026-08-30-mouse-only-control.md
 
 Design invariant: when access_mouseonly is 0, this module is inert and
 every input path is byte-identical to vanilla.

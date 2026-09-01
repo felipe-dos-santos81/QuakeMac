@@ -100,10 +100,12 @@ data and is never committed.
 
 ## Documentation
 
-Design specs, implementation plans, and the running Fixes Ledger live in
-`docs/superpowers/` (port spec/plan dated 2026-08-29, dead-code cleanup
-dated 2026-08-30, external texture overrides dated 2026-08-30,
-mouse-only control dated 2026-08-30, revised 2026-08-31).
+Each feature has one file in `docs/superpowers/` — its design spec
+followed by its implementation plan (port dated 2026-08-29, dead-code
+cleanup dated 2026-08-30, module-folder restructure dated 2026-08-30,
+external texture overrides dated 2026-08-30, mouse-only control dated
+2026-08-30, revised 2026-08-31). The running Fixes Ledger is appended at
+the end of the 2026-08-29 port file.
 
 ## Mouse-only play (accessibility)
 
