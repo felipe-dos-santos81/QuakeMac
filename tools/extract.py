@@ -230,14 +230,14 @@ def main():
                              "width": w, "height": h,
                              "override_path": "textures/%s.tga" % name})
 
-    # gfx.wad lumps (menu/HUD graphics; index 255 is transparent)
+    # gfx.wad lumps (menu/HUD graphics; transparent index 255,
+    # except conchars at 0)
     for lname in sorted(entries):
         filepos, size, typ = entries[lname]
         if typ == TYP_MIPTEX:
             tex = parse_miptex(wad, filepos)
             if tex:
                 _, w, h, pixels = tex
-                transparent = None
             else:
                 # engine reads conchars as raw pixels, no miptex header
                 # (gl_draw.c W_GetLumpName); square lump = w == h;
@@ -246,9 +246,9 @@ def main():
                 if w * h != size:
                     continue
                 pixels = wad[filepos:filepos + size]
-                transparent = 0
             save_png(os.path.join(outroot, "gfx", lname + ".png"),
-                     w, h, pixels, palette, transparent_index=transparent)
+                     w, h, pixels, palette,
+                     transparent_index=None if tex else 0)
             manifest.append({"name": lname, "category": "gfx",
                              "width": w, "height": h,
                              "override_path": "gfx/%s.tga" % lname})
