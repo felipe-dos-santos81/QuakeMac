@@ -237,15 +237,18 @@ def main():
             tex = parse_miptex(wad, filepos)
             if tex:
                 _, w, h, pixels = tex
+                transparent = None
             else:
                 # engine reads conchars as raw pixels, no miptex header
-                # (gl_draw.c W_GetLumpName); square lump = w == h
+                # (gl_draw.c W_GetLumpName); square lump = w == h;
+                # index 0 is transparent (Draw_Init remaps it to 255)
                 w = h = int(size ** 0.5)
                 if w * h != size:
                     continue
                 pixels = wad[filepos:filepos + size]
+                transparent = 0
             save_png(os.path.join(outroot, "gfx", lname + ".png"),
-                     w, h, pixels, palette)
+                     w, h, pixels, palette, transparent_index=transparent)
             manifest.append({"name": lname, "category": "gfx",
                              "width": w, "height": h,
                              "override_path": "gfx/%s.tga" % lname})
