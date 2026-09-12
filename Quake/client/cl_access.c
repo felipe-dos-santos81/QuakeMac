@@ -125,6 +125,58 @@ static void Access_Sound (char *name);	/* defined in the input section */
 
 /* ------------------------------------------------------------- commands */
 
+/*
+================
+Access_YawToPoint
+
+Yaw (degrees) that faces the given world point from the given origin.
+Quake forward is (cos yaw, sin yaw) in the XY plane, so atan2(dy,dx)
+is the direct yaw; no range normalization is needed (sin/cos accept
+any view angle).
+================
+*/
+static float Access_YawToPoint (vec3_t target, vec3_t origin)
+{
+	float	dx = target[0] - origin[0];
+	float	dy = target[1] - origin[1];
+
+	return atan2 (dy, dx) * (180.0f / M_PI);
+}
+
+/*
+================
+Access_FaceMapCenter
+
+Walk-mode entry effect: level the view to the horizon and aim the yaw
+at the loaded map's bounding-box midpoint.  Guards the case where the
+player is already at that midpoint so the snap is not driven by a null
+direction.
+================
+*/
+static void Access_FaceMapCenter (void)
+{
+	vec3_t	mid;
+	vec3_t	org;
+	float	dx, dy;
+
+	if (!cl.worldmodel)
+		return;
+
+	mid[0] = (cl.worldmodel->mins[0] + cl.worldmodel->maxs[0]) * 0.5f;
+	mid[1] = (cl.worldmodel->mins[1] + cl.worldmodel->maxs[1]) * 0.5f;
+	mid[2] = (cl.worldmodel->mins[2] + cl.worldmodel->maxs[2]) * 0.5f;
+	VectorCopy (cl_entities[cl.viewentity].origin, org);
+
+	cl.viewangles[PITCH] = 0;
+
+	dx = mid[0] - org[0];
+	dy = mid[1] - org[1];
+	if (fabs (dx) + fabs (dy) < 0.001f)
+		return;			/* player at map midpoint: no meaningful yaw */
+
+	cl.viewangles[YAW] = Access_YawToPoint (mid, org);
+}
+
 static void Access_ToggleMode_f (void)
 {
 	if (!access_mouseonly.value)
@@ -133,13 +185,13 @@ static void Access_ToggleMode_f (void)
 	access_throttle = 0;
 	if (access_mode == ACCESS_WALK)
 	{
-	/* entering walk mode levels the view: pitch snaps to the horizon,
-	   yaw keeps whichever way the player was facing */
-		cl.viewangles[PITCH] = 0;
+	/* entering walk mode recenters the view: pitch snaps to the horizon
+	   and yaw swings to face the loaded map's bounding-box midpoint */
 		access_lastinput = realtime;
 		Access_Log ("walk mode");
 		Access_Label ("WALK MODE");
 		Access_Sound ("misc/menu1.wav");
+		Access_FaceMapCenter ();
 	}
 	else
 	{
