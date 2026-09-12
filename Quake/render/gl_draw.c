@@ -581,6 +581,34 @@ void Draw_String (int x, int y, char *str)
 }
 
 /*
+=============
+Draw_StringAlpha
+
+Draws a string of 8*8 characters at the given opacity.  Draw_Character
+does not touch the current color, so a single glColor4f covers the whole
+string.  The conchars texture carries a real alpha channel (index 255
+uploaded as transparent), so blending alone reproduces the glyph mask.
+=============
+*/
+void Draw_StringAlpha (int x, int y, char *str, float alpha)
+{
+	glDisable (GL_ALPHA_TEST);
+	glEnable (GL_BLEND);
+	glColor4f (1,1,1,alpha);
+
+	while (*str)
+	{
+		Draw_Character (x, y, *str);
+		str++;
+		x += 8;
+	}
+
+	glColor4f (1,1,1,1);
+	glEnable (GL_ALPHA_TEST);
+	glDisable (GL_BLEND);
+}
+
+/*
 ================
 Draw_DebugChar
 
@@ -797,6 +825,35 @@ void Draw_Fill (int x, int y, int w, int h, int c)
 
 	glEnd ();
 	glColor3f (1,1,1);
+	glEnable (GL_TEXTURE_2D);
+}
+
+/*
+=============
+Draw_FillAlpha
+
+Fills a box of pixels with a single color at the given opacity (alpha).
+=============
+*/
+void Draw_FillAlpha (int x, int y, int w, int h, int c, float alpha)
+{
+	glDisable (GL_TEXTURE_2D);
+	glEnable (GL_BLEND);
+	glColor4f (host_basepal[c*3]/255.0,
+		host_basepal[c*3+1]/255.0,
+		host_basepal[c*3+2]/255.0,
+		alpha);
+
+	glBegin (GL_QUADS);
+
+	glVertex2f (x,y);
+	glVertex2f (x+w, y);
+	glVertex2f (x+w, y+h);
+	glVertex2f (x, y+h);
+
+	glEnd ();
+	glColor4f (1,1,1,1);
+	glDisable (GL_BLEND);
 	glEnable (GL_TEXTURE_2D);
 }
 //=============================================================================
