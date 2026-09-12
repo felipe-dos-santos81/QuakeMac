@@ -26,11 +26,14 @@ extern SDL_Window *sdl_window;	/* owned by gl_vidsdl.c */
 #define ACCESS_LOOK 0
 #define ACCESS_WALK 1
 
-/* HUD mode-button geometry, in vid.width x vid.height screen space */
-#define ACCESS_BTN_X 6
-#define ACCESS_BTN_Y 6
-#define ACCESS_BTN_W 44
-#define ACCESS_BTN_H 12
+/* HUD mode-button: centered, 70% opaque while the mouse moves, fully
+   opaque once the mouse rests.  Geometry is derived in
+   Access_ButtonRect from a 4-character label ("WALK"/"LOOK") plus
+   padding, in vid.width x vid.height screen space. */
+#define ACCESS_BTN_ALPHA     0.7f
+#define ACCESS_BTN_IDLE_MS   500
+#define ACCESS_BTN_PAD_X     6
+#define ACCESS_BTN_PAD_Y     2
 
 /* ---------------------------------------------------------------- cvars */
 
@@ -400,10 +403,22 @@ OS cursor is never grabbed in this port, so its window coordinates map
 to screen space the same way Access_MenuFrame maps the menu cursor —
 minus the 320-based offset, because the HUD draws in raw vid coords.
 */
+/* Centered WALK/LOOK button rect, derived every call from the current
+   vid size so video-mode changes need no stored state.  Label is always
+   4 characters. */
+static void Access_ButtonRect (int *x, int *y, int *w, int *h)
+{
+	*w = 4 * 8 + 2 * ACCESS_BTN_PAD_X;
+	*h = 8 + 2 * ACCESS_BTN_PAD_Y;
+	*x = (vid.width  - *w) / 2;
+	*y = (vid.height - *h) / 2;
+}
+
 static qboolean Access_CursorInButton (void)
 {
 	float	cx, cy;
 	int	ww, wh;
+	int	x, y, w, h;
 
 	SDL_GetMouseState (&cx, &cy);
 	SDL_GetWindowSize (sdl_window, &ww, &wh);
@@ -412,8 +427,9 @@ static qboolean Access_CursorInButton (void)
 	cx = cx * (float)vid.width / ww;
 	cy = cy * (float)vid.height / wh;
 
-	return cx >= ACCESS_BTN_X - 2 && cx < ACCESS_BTN_X + ACCESS_BTN_W + 2
-	    && cy >= ACCESS_BTN_Y - 2 && cy < ACCESS_BTN_Y + ACCESS_BTN_H + 2;
+	Access_ButtonRect (&x, &y, &w, &h);
+	return cx >= x - 2 && cx < x + w + 2
+	    && cy >= y - 2 && cy < y + h + 2;
 }
 
 void Access_ButtonEvent (int keynum, int down, unsigned int ms)
@@ -612,53 +628,34 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 
 void Access_DrawHUD (void)
 {
-	char	line[40];
-	qboolean	hover;
-	int	x, y, w, mid, fill;
+	float	alpha;
+	float	cx, cy;
+	int	x, y, w, h;
+	int	now;
+	static float	last_x = -1, last_y = -1;
+	static int	last_move_ms;
 
 	if (!access_mouseonly.value || !access_hud.value)
 		return;
 	if (key_dest != key_game || cls.demoplayback)
 		return;
 
-	x = 8;
-	y = 8;
-
-	Q_strcpy (line, access_mode == ACCESS_WALK ? "WALK" : "LOOK");
-
-	/* clickable mode button: boxed label. Hover brightens the frame and
-	   shows the blinking marker the menus use; the click itself is
-	   handled in Access_ButtonEvent */
-	hover = Access_CursorInButton ();
-	Draw_Fill (ACCESS_BTN_X, ACCESS_BTN_Y, ACCESS_BTN_W, ACCESS_BTN_H,
-	           hover ? 15 : 12);
-	Draw_Fill (ACCESS_BTN_X + 1, ACCESS_BTN_Y + 1,
-	           ACCESS_BTN_W - 2, ACCESS_BTN_H - 2, 0);
-	if (hover)
-		Draw_Character (ACCESS_BTN_X + ACCESS_BTN_W + 2, ACCESS_BTN_Y + 2,
-		                12 + ((int)(realtime * 4) & 1));
-	Draw_String (x, y, line);
-
-	/* throttle bar */
-	w = 64;
-	y += 12;
-	Draw_Fill (x, y, w, 4, 0);		/* background (palette index 0) */
-	mid = x + w / 2;
-	Draw_Fill (mid, y, 1, 4, 15);		/* center notch */
-	if (access_mode == ACCESS_WALK)
+	now = (int)SDL_GetTicks ();
+	SDL_GetMouseState (&cx, &cy);
+	if (cx != last_x || cy != last_y)
 	{
-		fill = (int)(access_throttle * (w / 2));
-		if (fill > 0)
-			Draw_Fill (mid, y, fill, 4, 12);
-		else if (fill < 0)
-			Draw_Fill (mid + fill, y, -fill, 4, 12);
+		last_x = cx;
+		last_y = cy;
+		last_move_ms = now;
 	}
+	alpha = (now - last_move_ms > ACCESS_BTN_IDLE_MS)
+	    ? 1.0f : ACCESS_BTN_ALPHA;
 
-	/* transient mode label, centered in the 2D space (vid.width may be
-	   640 — never assume 320) */
-	if (access_label[0] && realtime < access_label_until)
-		Draw_String (vid.width / 2 - 4 * Q_strlen (access_label),
-		             vid.height / 2 - 4, access_label);
+	Access_ButtonRect (&x, &y, &w, &h);
+	Draw_FillAlpha (x, y, w, h, 12, alpha);
+	Draw_FillAlpha (x + 1, y + 1, w - 2, h - 2, 0, alpha);
+	Draw_StringAlpha (x + ACCESS_BTN_PAD_X, y + ACCESS_BTN_PAD_Y,
+	                  access_mode == ACCESS_WALK ? "WALK" : "LOOK", alpha);
 }
 
 /* ---------------------------------------------------------- menu seams */
