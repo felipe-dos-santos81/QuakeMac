@@ -1297,3 +1297,14 @@ bindings (no mouse-driven weapon switching). QuakeWorld untouched;
 kill switch access_mouseonly unchanged.
 Validation: make clean && make build-release build-server
 build-client (exit 0); manual session pending.
+
+### Walk mode: face map center + 50% button opacity (feature)
+Commits: ac811e8, a2c2610. Spec + plan:
+docs/superpowers/2026-09-12-walk-face-map-center.md.
+Entering Walk mode now levels pitch to the horizon and swings yaw to
+face the loaded map's bounding-box midpoint (file-local
+Access_YawToPoint / Access_FaceMapCenter in cl_access.c, null-direction
+guarded); the dead-center Walk/Look HUD button dropped to 50% opacity.
+QuakeWorld untouched; kill switch access_mouseonly unchanged.
+Validation: make clean && make build-release build-server build-client
+(exit 0); manual session pending.
