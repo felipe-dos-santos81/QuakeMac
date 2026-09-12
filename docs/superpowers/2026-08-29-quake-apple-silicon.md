@@ -1299,7 +1299,7 @@ Validation: make clean && make build-release build-server
 build-client (exit 0); manual session pending.
 
 ### Walk mode: face map center + 50% button opacity (feature)
-Commits: ac811e8. Spec + plan:
+Commits: ac811e8, a2c2610. Spec + plan:
 docs/superpowers/2026-09-12-walk-face-map-center.md.
 Entering Walk mode now levels pitch to the horizon and swings yaw to
 face the loaded map's bounding-box midpoint (file-local
