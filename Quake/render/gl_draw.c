@@ -838,6 +838,7 @@ Fills a box of pixels with a single color at the given opacity (alpha).
 void Draw_FillAlpha (int x, int y, int w, int h, int c, float alpha)
 {
 	glDisable (GL_TEXTURE_2D);
+	glDisable (GL_ALPHA_TEST);
 	glEnable (GL_BLEND);
 	glColor4f (host_basepal[c*3]/255.0,
 		host_basepal[c*3+1]/255.0,
@@ -854,6 +855,7 @@ void Draw_FillAlpha (int x, int y, int w, int h, int c, float alpha)
 	glEnd ();
 	glColor4f (1,1,1,1);
 	glDisable (GL_BLEND);
+	glEnable (GL_ALPHA_TEST);
 	glEnable (GL_TEXTURE_2D);
 }
 //=============================================================================
