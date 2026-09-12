@@ -34,13 +34,16 @@ reviews should use these names.
   `Quake/client/cl_access.c` (QuakeWorld untouched), kill switch
   `access_mouseonly`. Scheme v2 (2026-08-31): MOUSE1 fires,
   double-click MOUSE1 jumps, MOUSE2 toggles **Look/Walk** modes; Walk
-  mode moves on Y, sidesteps on X, and levels the view on entry; the
-  boxed HUD LOOK/WALK label is a clickable toggle fallback; during
-  demo playback any click opens the main menu. Default config
-  `configs/autoexec-mouseonly.cfg` is copied to
+  mode moves on Y, sidesteps on X, and levels the view on entry; during
+  demo playback any click opens the main menu. Revision v3
+  (2026-09-11): the HUD Look/Walk toggle button is now dead-center
+  screen, drawn 70% opaque while the mouse moves and fully opaque after
+  500 ms of rest — the throttle bar and hover marker are gone. Default
+  config `configs/autoexec-mouseonly.cfg` is copied to
   `game/id1/autoexec.cfg` at runtime (game data — never committed).
-  Spec: `docs/superpowers/2026-08-30-mouse-only-control.md`
-  ("Revision 2026-08-31" section).
+  Specs: `docs/superpowers/2026-08-30-mouse-only-control.md`
+  ("Revision 2026-08-31" section) and
+  `docs/superpowers/2026-09-11-walk-toggle-button-centered-opacity.md`.
 - **Game data** — `game/id1/` feeds glquake; `game/qw/` feeds
   qwsv/glqwcl; both QuakeWorld binaries mount id1 and qw at startup.
   Loose TGA overrides under `game/id1/` (and `game/qw/` for QW) are game data

@@ -26,7 +26,10 @@ for educational purposes only. Three binaries: `glquake` (`Quake/`),
   `Quake/client/cl_access.c`, kill switch `access_mouseonly`; the
   committed default config `configs/autoexec-mouseonly.cfg` is meant
   to be copied to `game/id1/autoexec.cfg` at runtime (game data —
-  never committed there).
+  never committed there). Its HUD Look/Walk button is drawn dead-center
+  and translucent via two alpha draw primitives (`Draw_FillAlpha`,
+  `Draw_StringAlpha` in `render/gl_draw.c`) that toggle `GL_MODULATE`
+  / `GL_ALPHA_TEST` state — preserve that pattern when touching them.
 - Specs, plans, and the append-only Fixes Ledger:
   `docs/superpowers/` — one file per feature (design spec, then
   implementation plan); the ledger is appended at the end of

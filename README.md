@@ -104,8 +104,9 @@ Each feature has one file in `docs/superpowers/` — its design spec
 followed by its implementation plan (port dated 2026-08-29, dead-code
 cleanup dated 2026-08-30, module-folder restructure dated 2026-08-30,
 external texture overrides dated 2026-08-30, mouse-only control dated
-2026-08-30, revised 2026-08-31). The running Fixes Ledger is appended at
-the end of the 2026-08-29 port file.
+2026-08-30, revised 2026-08-31, walk-toggle button centered + opacity
+dated 2026-09-11). The running Fixes Ledger is appended at the end of
+the 2026-08-29 port file.
 
 ## Mouse-only play (accessibility)
 
@@ -119,8 +120,9 @@ including menus and saving. Copy `configs/autoexec-mouseonly.cfg` to
   the horizon on entry. Vertical auto-aim (`sv_aim`) covers aiming
   while firing.
 - MOUSE1 fire; double-click MOUSE1 jumps. Right-click toggles
-  Look/Walk; the boxed LOOK/WALK label in the HUD is clickable too,
-  for devices whose right button does not work. No wheel or side
+  Look/Walk; a centered LOOK/WALK button in the HUD (70% opaque while
+  the mouse moves, solid once it rests ~500 ms) is clickable too, for
+  devices whose right button does not work. No wheel or side
   buttons are used (consequence: no mouse-driven weapon switching).
 - During demo playback, any click opens the main menu.
 - Menus are point-and-click: left click selects, right click goes
