@@ -120,3 +120,240 @@ pitch leveling is lost.
     ~500 ms of stillness;
   - confirm Look mode still aims freely and the movement model is
     unchanged.
+
+---
+
+**Part 2 — implementation plan**
+
+# Walk face map center + 50% button opacity Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps
+> use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Drop the HUD Walk/Look button's moving-state opacity to 50% and
+make entering Walk mode snap the view (pitch level + yaw aiming at the
+loaded map's bounding-box midpoint) instead of only leveling pitch.
+
+**Architecture:** Two file-local changes in `Quake/client/cl_access.c`:
+change the `ACCESS_BTN_ALPHA` constant, then add a small yaw helper
+(`Access_YawToPoint`) plus an entry effect (`Access_FaceMapCenter`) that
+the Walk branch of `Access_ToggleMode_f` calls in place of its current
+`cl.viewangles[PITCH] = 0;`.
+
+**Tech Stack:** C (id-era style), math from `<math.h>` (`atan2`, `fabs`,
+`M_PI`). Build is the verification — there are no unit tests, lint, or CI.
+
+## Global Constraints
+
+- Build oracle (must pass before claiming done): `make clean && make
+  build-release build-server build-client` from the repo root.
+- No tests/lint/CI; the build is the only automated verification.
+- id-era C style: tabs (not spaces), K&R braces, `/* banner */` comment
+  blocks.
+- When `access_mouseonly` is 0 the module is inert and every input path
+  is byte-identical to vanilla — do not disturb the early-return guards.
+- `cl_access.c` must never call `gl_*` directly; this change touches no
+  render code.
+- The movement model (`Access_MouseMove` delta/throttle/velocity) and
+  Look mode are untouched.
+- Git: stage explicit paths only, never `git add -A`; push only when
+  explicitly asked.
+
+---
+
+### Task 1: 50% button opacity
+
+**Files:**
+- Modify: `Quake/client/cl_access.c` (constant + its comment)
+
+**Interfaces:**
+- Consumes: nothing new.
+- Produces: the value change only; `Access_DrawHUD` picks it up via the
+  existing `ACCESS_BTN_ALPHA` macro (no signature change).
+
+- [ ] **Step 1: Change the opacity constant**
+
+The button state section currently reads:
+
+```c
+/* HUD mode-button: centered, 70% opaque while the mouse moves, fully
+   opaque once the mouse rests.  Geometry is derived in
+   Access_ButtonRect from a 4-character label ("WALK"/"LOOK") plus
+   padding, in vid.width x vid.height screen space. */
+#define ACCESS_BTN_ALPHA     0.7f
+#define ACCESS_BTN_IDLE_MS   500
+#define ACCESS_BTN_PAD_X     6
+#define ACCESS_BTN_PAD_Y     2
+```
+
+Change it to:
+
+```c
+/* HUD mode-button: centered, 50% opaque while the mouse moves, fully
+   opaque once the mouse rests.  Geometry is derived in
+   Access_ButtonRect from a 4-character label ("WALK"/"LOOK") plus
+   padding, in vid.width x vid.height screen space. */
+#define ACCESS_BTN_ALPHA     0.5f
+#define ACCESS_BTN_IDLE_MS   500
+#define ACCESS_BTN_PAD_X     6
+#define ACCESS_BTN_PAD_Y     2
+```
+
+Note: `Access_DrawHUD`'s idle fade (`ACCESS_BTN_IDLE_MS 500` -> fully
+opaque) is untouched.
+
+- [ ] **Step 2: Build**
+
+Run: `make build-release` from the repo root.
+Expected: exit 0, no new warnings.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add Quake/client/cl_access.c
+git commit -m "access: render Walk/Look button at 50% opacity"
+```
+
+---
+
+### Task 2: Face map center on Walk entry
+
+**Files:**
+- Modify: `Quake/client/cl_access.c` (add helpers, edit the Walk branch)
+
+**Interfaces:**
+- Consumes: `cl.worldmodel` (`model_s *` with `vec3_t mins, maxs`,
+  model.h:314), `cl_entities[cl.viewentity].origin`, `cl.viewangles`,
+  and `<math.h>` (`atan2`, `fabs`, `M_PI`).
+- Produces: two file-local statics (no header change):
+  - `static float Access_YawToPoint (vec3_t target, vec3_t origin)` —
+    yaw in degrees facing `target` from `origin`.
+  - `static void  Access_FaceMapCenter (void)` — levels pitch and sets
+    yaw to face the map midpoint.
+
+- [ ] **Step 1: Add the two helpers**
+
+Immediately before `Access_ToggleMode_f` (the first function under the
+`/* commands */` banner), insert:
+
+```c
+/*
+================
+Access_YawToPoint
+
+Yaw (degrees) that faces the given world point from the given origin.
+Quake forward is (cos yaw, sin yaw) in the XY plane, so atan2(dy,dx)
+is the direct yaw; no range normalization is needed (sin/cos accept
+any view angle).
+================
+*/
+static float Access_YawToPoint (vec3_t target, vec3_t origin)
+{
+	float	dx = target[0] - origin[0];
+	float	dy = target[1] - origin[1];
+
+	return atan2 (dy, dx) * (180.0f / M_PI);
+}
+
+/*
+================
+Access_FaceMapCenter
+
+Walk-mode entry effect: level the view to the horizon and aim the yaw
+at the loaded map's bounding-box midpoint.  Guards the case where the
+player is already at that midpoint so the snap is not driven by a null
+direction.
+================
+*/
+static void Access_FaceMapCenter (void)
+{
+	vec3_t	mid;
+	vec3_t	org;
+	float	dx, dy;
+
+	if (!cl.worldmodel)
+		return;
+
+	mid[0] = (cl.worldmodel->mins[0] + cl.worldmodel->maxs[0]) * 0.5f;
+	mid[1] = (cl.worldmodel->mins[1] + cl.worldmodel->maxs[1]) * 0.5f;
+	mid[2] = (cl.worldmodel->mins[2] + cl.worldmodel->maxs[2]) * 0.5f;
+	VectorCopy (cl_entities[cl.viewentity].origin, org);
+
+	cl.viewangles[PITCH] = 0;
+
+	dx = mid[0] - org[0];
+	dy = mid[1] - org[1];
+	if (fabs (dx) + fabs (dy) < 0.001f)
+		return;			/* player at map midpoint: no meaningful yaw */
+
+	cl.viewangles[YAW] = Access_YawToPoint (mid, org);
+}
+```
+
+- [ ] **Step 2: Route the Walk branch through it**
+
+The Walk branch of `Access_ToggleMode_f` currently reads:
+
+```c
+	if (access_mode == ACCESS_WALK)
+	{
+	/* entering walk mode levels the view: pitch snaps to the horizon,
+	   yaw keeps whichever way the player was facing */
+		cl.viewangles[PITCH] = 0;
+		access_lastinput = realtime;
+		Access_Log ("walk mode");
+		Access_Label ("WALK MODE");
+		Access_Sound ("misc/menu1.wav");
+	}
+```
+
+Change it to:
+
+```c
+	if (access_mode == ACCESS_WALK)
+	{
+	/* entering walk mode recenters the view: pitch snaps to the horizon
+	   and yaw swings to face the loaded map's bounding-box midpoint */
+		access_lastinput = realtime;
+		Access_Log ("walk mode");
+		Access_Label ("WALK MODE");
+		Access_Sound ("misc/menu1.wav");
+		Access_FaceMapCenter ();
+	}
+```
+
+`Access_FaceMapCenter` sets `PITCH = 0` itself, so the pitch leveling
+behavior is preserved (and the stray `cl.viewangles[PITCH] = 0` line is
+removed rather than duplicated).
+
+- [ ] **Step 3: Full build oracle**
+
+Run: `make clean && make build-release build-server build-client` from
+the repo root.
+Expected: exit 0, no warnings.
+
+- [ ] **Step 4: Runtime smoke (user game data required)**
+
+Run: `make run`. Then:
+- toggle into Walk mode by MOUSE2 and by clicking the centered button;
+- confirm the view pitches level AND yaw swings to face the map center;
+- confirm the button reads 50% while the mouse moves and solid after
+  ~500 ms of stillness;
+- confirm Look mode still aims freely (yaw and pitch) and the movement
+  model is unchanged (Y = forward, X = sidestep).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Quake/client/cl_access.c
+git commit -m "access: face map center on walk mode entry"
+```
+
+- [ ] **Step 6: Update the running Fixes Ledger**
+
+Append one line to the ledger at the end of
+`docs/superpowers/2026-08-29-quake-apple-silicon.md` noting this change
+(walk mode faces map center; button now 50% opaque), matching the
+ledger's existing one-line-per-fix style.
