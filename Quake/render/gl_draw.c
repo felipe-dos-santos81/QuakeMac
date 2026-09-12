@@ -586,8 +586,10 @@ Draw_StringAlpha
 
 Draws a string of 8*8 characters at the given opacity.  Draw_Character
 does not touch the current color, so a single glColor4f covers the whole
-string.  The conchars texture carries a real alpha channel (index 255
-uploaded as transparent), so blending alone reproduces the glyph mask.
+string.  The glyph pass is switched to GL_MODULATE so the vertex alpha
+modulates the glyph texture: fragment alpha = texture_alpha * vertex_alpha,
+so opaque glyph texels fade to the requested opacity while the transparent
+texels (index 255 uploaded as transparent) stay clear.
 =============
 */
 void Draw_StringAlpha (int x, int y, char *str, float alpha)
@@ -595,6 +597,7 @@ void Draw_StringAlpha (int x, int y, char *str, float alpha)
 	glDisable (GL_ALPHA_TEST);
 	glEnable (GL_BLEND);
 	glColor4f (1,1,1,alpha);
+	glTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
 	while (*str)
 	{
@@ -603,6 +606,7 @@ void Draw_StringAlpha (int x, int y, char *str, float alpha)
 		x += 8;
 	}
 
+	glTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 	glColor4f (1,1,1,1);
 	glEnable (GL_ALPHA_TEST);
 	glDisable (GL_BLEND);
