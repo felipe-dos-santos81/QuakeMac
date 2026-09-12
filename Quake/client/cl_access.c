@@ -26,11 +26,11 @@ extern SDL_Window *sdl_window;	/* owned by gl_vidsdl.c */
 #define ACCESS_LOOK 0
 #define ACCESS_WALK 1
 
-/* HUD mode-button: centered, 70% opaque while the mouse moves, fully
+/* HUD mode-button: centered, 50% opaque while the mouse moves, fully
    opaque once the mouse rests.  Geometry is derived in
    Access_ButtonRect from a 4-character label ("WALK"/"LOOK") plus
    padding, in vid.width x vid.height screen space. */
-#define ACCESS_BTN_ALPHA     0.7f
+#define ACCESS_BTN_ALPHA     0.5f
 #define ACCESS_BTN_IDLE_MS   500
 #define ACCESS_BTN_PAD_X     6
 #define ACCESS_BTN_PAD_Y     2
