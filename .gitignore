@@ -6,3 +6,4 @@ build-macosx/
 graphify-out/
 tools/extracted/
 .superpowers/
+.worktrees/
