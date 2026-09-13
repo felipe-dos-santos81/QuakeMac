@@ -4,10 +4,10 @@ movement profiles, gesture engine, safety resets, point-and-click
 menus, HUD feedback.
 
 Control scheme (see configs/autoexec-mouseonly.cfg): MOUSE1 fires, a
-MOUSE1 double-click jumps, MOUSE2 toggles Look/Walk (the boxed HUD
-label is a click fallback). Walk mode moves on Y and sidesteps on X,
-and levels the view on entry. During demo playback any click opens
-the main menu.
+MOUSE1 double-click jumps, MOUSE2 toggles Look/Walk (the centered HUD
+button is a click fallback). Walk mode turns on X, moves on Y, and on
+entry levels the pitch and swings yaw to face the map center. During
+demo playback any click opens the main menu.
 
 Spec + plan: docs/superpowers/2026-08-30-mouse-only-control.md
 
@@ -622,13 +622,8 @@ void Access_MouseMove (usercmd_t *cmd, int mx, int my)
 	{
 		V_StopPitchDrift ();
 
-	/* X: sidestep */
-		v = Access_Curve (fx) * m_side.value;
-		if (v > cl_sidespeed.value)
-			v = cl_sidespeed.value;
-		else if (v < -cl_sidespeed.value)
-			v = -cl_sidespeed.value;
-		cmd->sidemove += v;
+	/* X: turn */
+		cl.viewangles[YAW] -= m_yaw.value * fx;
 
 	/* Y: movement */
 		cap = Access_WalkSpeedCap ();
@@ -707,7 +702,7 @@ void Access_DrawHUD (void)
 	Draw_FillAlpha (x, y, w, h, 12, alpha);
 	Draw_FillAlpha (x + 1, y + 1, w - 2, h - 2, 0, alpha);
 	Draw_StringAlpha (x + ACCESS_BTN_PAD_X, y + ACCESS_BTN_PAD_Y,
-	                  access_mode == ACCESS_WALK ? "WALK" : "LOOK", alpha);
+	                  access_mode == ACCESS_WALK ? "LOOK" : "WALK", alpha);
 }
 
 /* ---------------------------------------------------------- menu seams */
