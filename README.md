@@ -115,14 +115,15 @@ including menus and saving. Copy `configs/autoexec-mouseonly.cfg` to
 `game/id1/autoexec.cfg` and launch.
 
 - Look mode (default): standard mouselook. Right-click (MOUSE2)
-  toggles to Walk mode: mouse forward/back sets a throttle (the mouse
-  can rest still while walking), X sidesteps, and the view levels to
-  the horizon on entry. Vertical auto-aim (`sv_aim`) covers aiming
-  while firing.
+  toggles to Walk mode: mouse turns left/right, forward/back sets a
+  throttle (the mouse can rest still while walking), and entering Walk
+  mode levels the view and faces the map center. Vertical auto-aim
+  (`sv_aim`) covers aiming while firing.
 - MOUSE1 fire; double-click MOUSE1 jumps. Right-click toggles
-  Look/Walk; a centered LOOK/WALK button in the HUD (70% opaque while
-  the mouse moves, solid once it rests ~500 ms) is clickable too, for
-  devices whose right button does not work. No wheel or side
+  Look/Walk; a centered button in the HUD (labeled with the mode a
+  click switches to, 50% opaque while the mouse moves, solid once it
+  rests ~500 ms) is clickable too, for devices whose right button does
+  not work. No wheel or side
   buttons are used (consequence: no mouse-driven weapon switching).
 - During demo playback, any click opens the main menu.
 - Menus are point-and-click: left click selects, right click goes

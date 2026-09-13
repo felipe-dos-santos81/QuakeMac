@@ -1308,3 +1308,15 @@ guarded); the dead-center Walk/Look HUD button dropped to 50% opacity.
 QuakeWorld untouched; kill switch access_mouseonly unchanged.
 Validation: make clean && make build-release build-server build-client
 (exit 0); manual session pending.
+
+### Walk mode v3 — X turns, button caption shows action (fix)
+Commits: f3db156. Follow-up runtime fix to the 2026-09-12 work. Two
+reports: the HUD button caption read inverted (it showed the current
+mode, not what a click would do), and Walk-mode X sidestepped instead
+of turning. Walk mode now turns on X (m_yaw, same as Look mode) and
+keeps Y = throttle/velocity movement; the HUD button caption shows the
+action ("WALK" while looking, "LOOK" while walking). Face-map-center
+entry snap and pitch leveling retained. QuakeWorld untouched; kill
+switch access_mouseonly unchanged.
+Validation: make clean && make build-release build-server build-client
+(exit 0); manual session pending.
