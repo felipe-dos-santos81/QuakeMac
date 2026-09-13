@@ -22,6 +22,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "cl_access.h"
+#ifdef QUAKE_MCP
+#include "q_mcp.h"
+#endif
 
 void GL_Set2D (void);
 
@@ -755,6 +758,9 @@ int SCR_ModalMessage (char *text)
 	{
 		key_count = -1;		// wait for a key down and up
 		Sys_SendKeyEvents ();
+#ifdef QUAKE_MCP
+		MCP_Poll ();
+#endif
 	} while (key_lastpress != 'y' && key_lastpress != 'n' && key_lastpress != K_ESCAPE);
 
 	scr_fullupdate = 0;
