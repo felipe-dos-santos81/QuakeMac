@@ -1,14 +1,12 @@
-# Quake (GPL source) — Apple Silicon port
+# Quake — Apple Silicon Port
 
-A fork of [id-software/quake](https://github.com/id-software/quake) —
-the 1999 id Software GPL release — simplified into an Apple Silicon port
-and maintained for educational purposes only. The target is **macOS on
-Apple Silicon (arm64) only**: Windows/DOS/Linux/Sun platform code, the
-software renderer, and the x86 assembly have been removed; the engines
-build through an additive SDL3 platform layer. See `gnu.txt` for the
-license.
+An educational fork of [id Software's Quake](https://github.com/id-software/quake)
+(the 1999 GPL release), simplified for a native Apple Silicon (arm64) macOS
+port: SDL3 for video/input/audio, an OpenGL renderer, and every other platform
+backend removed (Windows/DOS/Linux/Sun, the software renderer, the x86
+assembly).
 
-## What builds
+Three binaries build from two source trees:
 
 | Binary | Tree | What it is |
 |---|---|---|
@@ -18,36 +16,23 @@ license.
 
 `QuakeWorld/progs/` holds the QuakeWorld QuakeC source and `qwprogs.dat`.
 
-## Prerequisites
+Built for educational purposes only. License: GPL, see `gnu.txt`.
 
-- macOS on Apple Silicon, Xcode command line tools (`cc`, `make`)
-- SDL3, resolvable via pkg-config: `brew install sdl3 pkg-config`
-- Game data from a legally owned Quake (not included; `game/` is gitignored)
-- Python 3 + Pillow (`pip install Pillow`) — only for the optional texture tools in `tools/`
+Development conventions and agent instructions live in [`AGENTS.md`](AGENTS.md).
 
-## Build
+**This repository does not ship the game data.** You must add the base game
+files from a retail Quake installation yourself.
 
-A single `Makefile` lives at the repo root; bare `make` prints the target
-list.
+## Requirements
 
-```sh
-make build-release               # → Quake/build-macosx/glquake
-make build-server build-client   # → QuakeWorld/build-macosx/qwsv, glqwcl
-```
+- macOS on Apple Silicon (arm64)
+- Xcode Command Line Tools (`cc`, `make`)
+- SDL3 — `brew install sdl3 pkg-config`
+- (optional, texture tools only) Python 3 + Pillow — `pip install Pillow`
 
-The three builds are independent — add `-j` to parallelize, e.g.
-`make -j build-release build-server build-client`.
+## Game data
 
-Other targets: `build-debug` / `build-server-debug`, `check-data`
-(both games; `check-data-quake` / `check-data-qw` check one), `run` /
-`run-server` / `run-client`, `export-textures` (extract game textures
-to `tools/extracted/`), `clean`.
-
-## Game data (not included)
-
-The engines do not run without the base game files, which are not
-included in this repo. Copy them from a legally owned Quake into
-`game/` (gitignored):
+Copy the base game files into `game/` at the repository root:
 
 ```
 game/
@@ -55,25 +40,51 @@ game/
 └── qw/    qwprogs.dat and pak0.pak         ← qwsv / glqwcl
 ```
 
-`pak0.pak` (plus `pak1.pak` for the registered game) lives in the
-`id1/` folder of your Quake installation. For QuakeWorld, also copy
-`qwprogs.dat` into `game/qw/` — a copy ships in this repo at
-`QuakeWorld/progs/qwprogs.dat`. `make check-data`
-(or `check-data-quake` / `check-data-qw` per game) verifies the
-layout before launching.
+`pak0.pak` (plus `pak1.pak` for the registered game) lives in the `id1/`
+folder of your Quake installation. For QuakeWorld, also copy `qwprogs.dat`
+into `game/qw/` — a copy ships in this repo at `QuakeWorld/progs/qwprogs.dat`.
+Saves, screenshots, and configs also live under `game/` and are git-ignored.
 
-## Run
+## Build and run
 
-```sh
-make run          # glquake against game/
-make run-server   # qwsv against game/qw
-make run-client   # glqwcl; then: connect localhost
+```
+make build-release                  # → Quake/build-macosx/glquake
+make build-server build-client      # → QuakeWorld/build-macosx/qwsv, glqwcl
+make run                            # glquake against game/
+make run-server                     # qwsv against game/qw
+make run-client                     # glqwcl; then: connect localhost
 ```
 
-## External texture overrides (optional)
+The three builds are independent — add `-j` to parallelize them. `make` with
+no target prints the target list; `make check-data` verifies the game-data
+layout before launching, `make clean` removes build output, and
+`build-debug` / `build-server-debug` build the debug variants.
 
-Loose TGA files under `game/id1/` override the original 8-bit assets
-at load time in both GL clients (`glquake` and `glqwcl`):
+## Mouse-only play (accessibility)
+
+glquake can be played entirely with a pointing device — no keyboard, including
+the menus and saving. Copy `configs/autoexec-mouseonly.cfg` to
+`game/id1/autoexec.cfg` and launch.
+
+Look mode (the default) is standard mouselook. Right-click (or the HUD button)
+toggles **walk mode**: the view levels and swings to face the map center on
+entry, the mouse turns left/right, and forward/back sets a throttle (the mouse
+can rest still while walking). Vertical auto-aim (`sv_aim`) covers aiming
+while firing. A fixed button at the dead center of the HUD offers the same
+toggle for mice without a working right button — labeled with the mode a click
+switches to ("WALK" while looking, "LOOK" while walking), drawn 50% opaque
+while the mouse moves and solid once it rests (~500 ms).
+
+MOUSE1 fires and a MOUSE1 double-click jumps; no wheel or side buttons are
+used (so there is no mouse-driven weapon switching). The cursor is never
+locked — keep the window focused for motion input; `access_mouseonly 0`
+restores the stock input behavior. During demo playback, any click opens the
+main menu.
+
+## Texture overrides
+
+Loose TGA files under `game/id1/` override the original 8-bit assets at load
+time in both GL clients (`glquake` and `glqwcl`):
 
 ```
 game/id1/textures/<name>.tga   — brush textures (any power-of-two size, same aspect)
@@ -81,57 +92,21 @@ game/id1/gfx/<name>.tga        — menu/HUD pics (exact original size)
 game/id1/progs/<model>.tga     — alias skins / sprite frames (same aspect)
 ```
 
-Toggle at runtime with `gl_externaltextures 0/1` (applies to
-subsequently loaded textures). See `tools/README.md` for the
-extraction pipeline.
+Toggle at runtime with `gl_externaltextures 0/1` (applies to subsequently
+loaded textures). The extraction pipeline lives in `tools/` (decoupled,
+Pillow-only):
 
-### Texture tools (decoupled, `tools/`)
-
-```sh
+```
 pip install Pillow                       # one-time
 make export-textures                     # → tools/extracted/ + manifest.json
-# edit the indexed PNGs (original Quake palette) with any image tool
-# (keep stem names; stay indexed to stay on-palette)
 python3 tools/install.py <png-or-dir>    # validates + writes TGA to game/id1/
 ```
 
-`tools/extracted/` is gitignored — it derives from commercial game
-data and is never committed.
+`tools/extracted/` is git-ignored — it derives from commercial game data and
+is never committed.
 
 ## Documentation
 
-Each feature has one file in `docs/superpowers/` — its design spec
-followed by its implementation plan (port dated 2026-08-29, dead-code
-cleanup dated 2026-08-30, module-folder restructure dated 2026-08-30,
-external texture overrides dated 2026-08-30, mouse-only control dated
-2026-08-30, revised 2026-08-31, walk-toggle button centered + opacity
-dated 2026-09-11). The running Fixes Ledger is appended at the end of
-the 2026-08-29 port file.
-
-## Mouse-only play (accessibility)
-
-glquake can be played entirely with a pointing device — no keyboard,
-including menus and saving. Copy `configs/autoexec-mouseonly.cfg` to
-`game/id1/autoexec.cfg` and launch.
-
-- Look mode (default): standard mouselook. Right-click (MOUSE2)
-  toggles to Walk mode: mouse turns left/right, forward/back sets a
-  throttle (the mouse can rest still while walking), and entering Walk
-  mode levels the view and faces the map center. Vertical auto-aim
-  (`sv_aim`) covers aiming while firing.
-- MOUSE1 fire; double-click MOUSE1 jumps. Right-click toggles
-  Look/Walk; a centered button in the HUD (labeled with the mode a
-  click switches to, 50% opaque while the mouse moves, solid once it
-  rests ~500 ms) is clickable too, for devices whose right button does
-  not work. No wheel or side
-  buttons are used (consequence: no mouse-driven weapon switching).
-- During demo playback, any click opens the main menu.
-- Menus are point-and-click: left click selects, right click goes
-  back, wheel scrolls. Options > Mouse-only options tunes everything
-  (gains, dead zone, response curve, speed cap, tremor filter,
-  gestures, HUD, sounds, plus sv_aim / cl_bob / cl_rollangle /
-  v_kicktime / host_timescale / host_maxfps).
-- The cursor is never locked; keep the window focused for motion
-  input. `access_mouseonly 0` restores stock input behavior; the
-  wheel still scrolls menus/console and Options keeps its Mouse-only
-  row (both live outside the kill switch by design).
+Each feature has one file in `docs/superpowers/` — its design spec followed
+by its implementation plan. The running Fixes Ledger is appended at the end of
+the `2026-08-29-quake-apple-silicon.md` port file.

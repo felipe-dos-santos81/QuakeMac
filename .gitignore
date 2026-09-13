@@ -5,3 +5,4 @@ build-macosx/
 .qwen/
 graphify-out/
 tools/extracted/
+.superpowers/
