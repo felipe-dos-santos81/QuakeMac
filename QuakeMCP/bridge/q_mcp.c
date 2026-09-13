@@ -7,12 +7,13 @@ as published by the Free Software Foundation; either version 2
 of the License, or (at your option) any later version.
 */
 
-// q_mcp.c -- QuakeMCP bridge skeleton: token TCP, poll pump, ping op
+// q_mcp.c -- QuakeMCP bridge: token TCP, poll pump, console/cvar ops
 //
 // Out-of-process Python server talks line-JSON over loopback TCP.
 // This file owns the socket, the per-instance token and request
 // dispatch. Called on the main thread only (MCP_Poll from _Host_Frame
-// and the SCR_ModalMessage loop). No game-state writes in this task.
+// and the SCR_ModalMessage loop). exec/cvar mutate through the same
+// Cbuf_/Cvar_ paths the in-game console uses.
 
 #include "quakedef.h"
 
@@ -28,6 +29,16 @@ of the License, or (at your option) any later version.
 #define MCP_TOKEN_BYTES	32
 #define MCP_POLL_BUDGET	0.05
 #define MCP_RETRY_SECS	5.0
+#define MCP_EXEC_MAX	4096
+#define MCP_TAIL_LINES	8
+#define MCP_REPLY_MAX	16384
+#define MCP_EXEC_MAX	4096
+#define MCP_TAIL_LINES	8
+
+extern char	*con_text;
+extern int	con_totallines;
+extern int	con_current;
+extern int	con_linewidth;
 
 cvar_t	mcp_enabled = {"mcp_enabled", "0"};
 cvar_t	mcp_port = {"mcp_port", "28900"};
@@ -190,35 +201,194 @@ static void MCP_CloseClient (void)
 ==================
 MCP_Field
 
-Copy the string value of "name" from a flat JSON line. False if absent.
+Copy the top-level string value of "name" from a flat JSON line.
+Returns 1 if the full value fit, -1 if truncated to outsize (still
+NUL-terminated), 0 if absent. Nested objects are skipped, so a key
+inside a nested value never matches. Handles \" \\ \/ \b \f \n
+\r \t escapes; \uXXXX decodes to '?' (protocol carries ASCII).
 ==================
 */
-static qboolean MCP_Field (char *line, char *name, char *out, int outsize)
+static int MCP_Field (char *line, char *name, char *out, int outsize)
 {
-	char key[64];
 	char *p, *q;
+	int depth, n, full, i;
+
+	p = line;
+	if (*p == '{')
+		p++;
+	depth = 0;
+	while (*p)
+	{
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p != '"')
+		{
+		// skip value noise between members
+			if (*p == '{' || *p == '[')
+				depth++;
+			else if (*p == '}' || *p == ']')
+			{
+				if (depth == 0)
+					break;
+				depth--;
+			}
+			p++;
+			continue;
+		}
+	// quoted key at top level?
+		q = p + 1;
+		n = strlen (name);
+		if (depth == 0 && !strncmp (q, name, n) && q[n] == '"')
+		{
+			p = strchr (q + n + 1, ':');
+			if (!p)
+				return 0;
+			p++;
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (*p != '"')
+				return 0;
+			p++;
+			n = 0;
+			full = 0;
+			while (*p && *p != '"')
+			{
+				if (*p == '\\' && p[1])
+				{
+					p++;
+					full++;
+					if (*p == 'u')
+					{ // \uXXXX -> '?', skip hex digits
+						if (n + 1 < outsize)
+							out[n++] = '?';
+						for (i = 0; i < 4 && p[1]; i++)
+							p++;
+						p++;
+						continue;
+					}
+					if (n + 1 >= outsize)
+					{
+						p++;
+						continue;
+					}
+					switch (*p)
+					{
+					case 'n': out[n++] = '\n'; break;
+					case 'r': out[n++] = '\r'; break;
+					case 't': out[n++] = '\t'; break;
+					case 'b': out[n++] = '\b'; break;
+					case 'f': out[n++] = '\f'; break;
+					default: out[n++] = *p; break;
+					}
+					p++;
+					continue;
+				}
+				full++;
+				if (n + 1 < outsize)
+					out[n++] = *p;
+				p++;
+			}
+			out[n] = 0;
+			return (full <= outsize - 1) ? 1 : -1;
+		}
+	// skip this quoted string, then track depth past it
+		p = q;
+		while (*p && *p != '"')
+		{
+			if (*p == '\\' && p[1])
+				p++;
+			p++;
+		}
+		if (*p == '"')
+			p++;
+	}
+	out[0] = 0;
+	return 0;
+}
+
+/*
+==================
+MCP_Escape
+
+JSON-escape src into dst (quotes, backslash, control chars).
+==================
+*/
+static void MCP_Escape (char *dst, int dstsize, char *src)
+{
 	int n;
 
-	snprintf (key, sizeof (key), "\"%s\"", name);
-	p = strstr (line, key);
-	if (!p)
-		return false;
-	p = strchr (p + strlen (key), ':');
-	if (!p)
-		return false;
-	p = strchr (p + 1, '"');
-	if (!p)
-		return false;
-	p++;
 	n = 0;
-	for (q = p; *q && *q != '"' && n + 1 < outsize; q++)
+	while (*src && n + 6 < dstsize)
 	{
-		if (*q == '\\' && q[1])
-			q++;
-		out[n++] = *q;
+		switch (*src)
+		{
+		case '"': dst[n++] = '\\'; dst[n++] = '"'; break;
+		case '\\': dst[n++] = '\\'; dst[n++] = '\\'; break;
+		case '\n': dst[n++] = '\\'; dst[n++] = 'n'; break;
+		case '\r': dst[n++] = '\\'; dst[n++] = 'r'; break;
+		case '\t': dst[n++] = '\\'; dst[n++] = 't'; break;
+		default:
+			if ((unsigned char)*src < 0x20)
+			{
+				n += snprintf (dst + n, dstsize - n, "\\u%04x",
+					(unsigned char)*src);
+			}
+			else
+				dst[n++] = *src;
+			break;
+		}
+		src++;
+	}
+	dst[n] = 0;
+}
+
+/*
+==================
+MCP_ConsoleTail
+
+Copy the last MCP_TAIL_LINES console lines into out, oldest first.
+Reads the con_text ring only; no console changes. Row bytes carry a
+color bit in the high bit; trailing spaces are trimmed. Guards: NULL
+ring (pre-Con_Init), degenerate width, con_current < 0 at startup.
+==================
+*/
+void MCP_ConsoleTail (char *out, int outsize)
+{
+	char row[256];
+	int width, total, cur, first, i, j, n;
+
+	n = 0;
+	out[0] = 0;
+	if (!con_text || con_linewidth <= 0 || con_totallines <= 0)
+		return;
+	width = con_linewidth;
+	if (width > (int)sizeof (row) - 1)
+		width = sizeof (row) - 1;
+	total = con_totallines;
+	cur = con_current;
+	if (cur < 0)
+		return;
+	first = cur - (MCP_TAIL_LINES - 1);
+	if (first < 0)
+		first = 0;
+	for (i = first; i <= cur; i++)
+	{
+		Q_memcpy (row, con_text + (i % total) * con_linewidth, width);
+		row[width] = 0;
+		for (j = width - 1; j >= 0; j--)
+		{
+			if (row[j] != ' ')
+				break;
+			row[j] = 0;
+		}
+		for (j = 0; row[j]; j++)
+			row[j] &= 0x7f;
+		if (n > 0 && n + 1 < outsize)
+			out[n++] = '\n';
+		for (j = 0; row[j] && n + 1 < outsize; j++)
+			out[n++] = row[j];
 	}
 	out[n] = 0;
-	return true;
 }
 
 /*
@@ -256,7 +426,8 @@ policy; malformed lines use INVALID_CONTEXT).
 */
 static void MCP_Reply (char *id, qboolean ok, char *error, char *result)
 {
-	char idbuf[128], out[1024], *s, *d;
+	char idbuf[128], *s, *d;
+	static char out[MCP_REPLY_MAX];
 	int n;
 
 	n = 0;
@@ -282,11 +453,24 @@ static void MCP_Reply (char *id, qboolean ok, char *error, char *result)
 /*
 ==================
 MCP_HandleLine
+
+exec: Cbuf_AddText (newline appended if missing); oversize 4 KiB
+rejected with POLICY_DENIED. Reply carries the last 8 console lines.
+Note: the tail reflects lines printed before this poll; the exec
+text itself runs later in _Host_Frame via Cbuf_Execute, so callers
+poll a second time for command output.
+cvar get/set via Cvar_FindVar/Cvar_Set; miss -> INVALID_CONTEXT.
 ==================
 */
 static void MCP_HandleLine (char *line)
 {
 	char auth[128], id[128], op[64];
+	char text[MCP_EXEC_MAX + 1];
+	char name[128], value[1024];
+	char tail[8192], esctail[8192 * 2], result[MCP_REPLY_MAX];
+	char escval[2048];
+	cvar_t *var;
+	int r;
 
 	if (!MCP_Field (line, "id", id, sizeof (id)))
 		strcpy (id, "");
@@ -305,6 +489,50 @@ static void MCP_HandleLine (char *line)
 	if (!strcmp (op, "ping"))
 	{
 		MCP_Reply (id, true, NULL, "\"ready\":true");
+		return;
+	}
+
+	if (!strcmp (op, "exec"))
+	{
+		r = MCP_Field (line, "text", text, sizeof (text));
+		if (r == 0)
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "exec needs text");
+			return;
+		}
+		if (r < 0)
+		{
+			MCP_Reply (id, false, "POLICY_DENIED", "exec text over 4 KiB");
+			return;
+		}
+		Cbuf_AddText (text);
+		if (text[0] && text[strlen (text) - 1] != '\n')
+			Cbuf_AddText ("\n");
+		MCP_ConsoleTail (tail, sizeof (tail));
+		MCP_Escape (esctail, sizeof (esctail), tail);
+		snprintf (result, sizeof (result), "\"output\":\"%s\"", esctail);
+		MCP_Reply (id, true, NULL, result);
+		return;
+	}
+
+	if (!strcmp (op, "cvar"))
+	{
+		if (!MCP_Field (line, "name", name, sizeof (name)))
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "cvar needs name");
+			return;
+		}
+		var = Cvar_FindVar (name);
+		if (!var)
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", name);
+			return;
+		}
+		if (MCP_Field (line, "value", value, sizeof (value)))
+			Cvar_Set (name, value);
+		MCP_Escape (escval, sizeof (escval), var->string);
+		snprintf (result, sizeof (result), "\"value\":\"%s\"", escval);
+		MCP_Reply (id, true, NULL, result);
 		return;
 	}
 
