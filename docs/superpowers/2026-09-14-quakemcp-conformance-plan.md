@@ -472,7 +472,7 @@ git commit -m "feat: quakemcp async tools with shared mutation envelope"
 
 **Interfaces:**
 - Consumes: Task 2's envelope fields on the wire.
-- Produces: `MCP_CheckPreconditions(line, id) -> qboolean`; `MCP_LookupReceipt(line, id) -> qboolean`; `MCP_RecordReceipt(op, lease, aid, epoch, hash, result)`; ledger entries gain `op[16]`, `state[16]`; reply payloads may carry `"duplicate":true`; ops `tail`, `status`.
+- Produces: `MCP_CheckPreconditions(line, id) -> qboolean`; `MCP_LookupReceipt(line, id) -> qboolean`; `MCP_RecordReceipt(op, aid, hash, state, result)` (lease/epoch read from the current lease at call time); ledger entries gain `op[16]`, `state[16]`; reply payloads may carry `"duplicate":true`; ops `tail`, `status`.
 
 - [ ] **Step 1: Write the failing integration test**
 
