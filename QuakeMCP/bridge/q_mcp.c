@@ -37,6 +37,7 @@ of the License, or (at your option) any later version.
 #define MCP_REPLY_MAX	16384
 #define MCP_LEASE_TIMEOUT	2.0
 #define MCP_ACT_CAP	5.0
+#define MCP_SLOTS	2
 
 extern char	*con_text;
 extern int	con_totallines;
@@ -48,12 +49,23 @@ extern kbutton_t	in_attack, in_jump;
 cvar_t	mcp_enabled = {"mcp_enabled", "0"};
 cvar_t	mcp_port = {"mcp_port", "28900"};
 
+typedef struct
+{
+	int	fd;
+	char	line[MCP_LINE_MAX + 1];
+	int	len;
+} mcp_slot_t;
+
 static int	mcp_listen_fd = -1;
-static int	mcp_client_fd = -1;
+static mcp_slot_t mcp_slots[MCP_SLOTS] = {
+	{ -1, { 0 }, 0 },
+	{ -1, { 0 }, 0 },
+};
+static int	mcp_reply_fd = -1;	// target of the next MCP_Reply
+static int	mcp_act_fd = -1;	// connection owning a deferred act
+static int	mcp_observe_fd = -1;	// connection owning a deferred observe
 static char	mcp_token[2 * MCP_TOKEN_BYTES + 1];
 static char	mcp_token_path[256];
-static char	mcp_line[MCP_LINE_MAX + 1];
-static int	mcp_line_len = 0;
 static int	mcp_oversize_drops = 0;
 static double	mcp_retry_at = 0;
 
@@ -119,6 +131,9 @@ static int	mcp_world_gen;
 // Deferred observation reply (Task 7): observe arms MCAP_* and the reply
 // is sent from MCP_Poll once the frame is captured.
 static char	mcp_observe_id[128];
+
+// the slot layer finishes a deferred act when its connection goes away
+static void MCP_FinishAct (qboolean interrupted);
 
 
 /*
@@ -189,8 +204,9 @@ static qboolean MCP_WriteToken (void)
 ==================
 MCP_Setup
 
-Bind loopback, single client, non-blocking. Port from -mcp_port CLI
-first, mcp_port cvar second. Idempotent: safe to call every poll.
+Bind loopback, non-blocking, room for both connection slots. Port from
+-mcp_port CLI first, mcp_port cvar second. Idempotent: safe to call
+every poll.
 ==================
 */
 static void MCP_Setup (void)
@@ -236,7 +252,7 @@ static void MCP_Setup (void)
 	setsockopt (fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof (one));
 	if (bind (fd, (struct sockaddr *)&addr, sizeof (addr)) < 0)
 		goto fail;
-	if (listen (fd, 1) < 0)
+	if (listen (fd, MCP_SLOTS) < 0)
 		goto fail;
 
 	mcp_listen_fd = fd;
@@ -254,15 +270,135 @@ fail:
 
 /*
 ==================
-MCP_CloseClient
+MCP_SlotForFd
+
+Find the slot owning fd, or -1.
 ==================
 */
-static void MCP_CloseClient (void)
+static int MCP_SlotForFd (int fd)
 {
-	if (mcp_client_fd >= 0)
-		close (mcp_client_fd);
-	mcp_client_fd = -1;
-	mcp_line_len = 0;
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+		if (mcp_slots[i].fd == fd)
+			return i;
+	return -1;
+}
+
+/*
+==================
+MCP_FreeSlot
+
+First slot without a connection, or -1 when both are occupied.
+==================
+*/
+static int MCP_FreeSlot (void)
+{
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+		if (mcp_slots[i].fd < 0)
+			return i;
+	return -1;
+}
+
+/*
+==================
+MCP_CloseSlot
+
+Close one connection and forget it. When the slot owned a deferred act
+the act is finished (the reply to the dead fd is a no-op) and when it
+owned a deferred observe the capture is dropped: neither may outlive
+the connection that asked for it.
+==================
+*/
+static void MCP_CloseSlot (int i)
+{
+	mcp_slot_t *s;
+	int fd, ownsact, ownsobs;
+
+	s = &mcp_slots[i];
+	fd = s->fd;
+	if (fd < 0)
+		return;
+	s->fd = -1;
+	s->len = 0;
+	ownsact = (mcp_act_fd == fd);
+	ownsobs = (mcp_observe_fd == fd);
+	if (mcp_reply_fd == fd)
+		mcp_reply_fd = -1;
+	close (fd);
+	if (ownsact)
+		MCP_FinishAct (true);
+	if (ownsobs)
+	{
+		mcp_observe_fd = -1;
+		MCAP_Cancel ();
+	}
+}
+
+/*
+==================
+MCP_CloseAll
+
+Drop every connection, for shutdown.
+==================
+*/
+static void MCP_CloseAll (void)
+{
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+		MCP_CloseSlot (i);
+	mcp_reply_fd = -1;
+}
+
+/*
+==================
+MCP_CloseFd
+
+Close the slot that owns fd; other connections are untouched. The send
+error paths use this so only the failed target is dropped.
+==================
+*/
+static void MCP_CloseFd (int fd)
+{
+	int i;
+
+	i = MCP_SlotForFd (fd);
+	if (i >= 0)
+		MCP_CloseSlot (i);
+}
+
+/*
+==================
+MCP_ReapEofSlot
+
+Close a slot whose peer is at EOF (or in error) and return its index.
+The MSG_PEEK probe leaves any pending bytes untouched. Returns -1 when
+every occupied slot still has a live peer.
+==================
+*/
+static int MCP_ReapEofSlot (void)
+{
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+	{
+		char probe;
+		int pn;
+
+		if (mcp_slots[i].fd < 0)
+			continue;
+		pn = recv (mcp_slots[i].fd, &probe, 1, MSG_PEEK);
+		if (pn == 0 || (pn < 0 && errno != EAGAIN
+			&& errno != EWOULDBLOCK && errno != EINTR))
+		{
+			MCP_CloseSlot (i);
+			return i;
+		}
+	}
+	return -1;
 }
 
 /*
@@ -468,15 +604,17 @@ static void MCP_Send (char *msg)
 {
 	int left, n;
 
+	if (mcp_reply_fd < 0)
+		return;
 	left = strlen (msg);
-	while (left > 0 && mcp_client_fd >= 0)
+	while (left > 0 && mcp_reply_fd >= 0)
 	{
-		n = send (mcp_client_fd, msg + strlen (msg) - left, left, 0);
+		n = send (mcp_reply_fd, msg + strlen (msg) - left, left, 0);
 		if (n <= 0)
 		{
 			if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
 				continue;
-			MCP_CloseClient ();
+			MCP_CloseFd (mcp_reply_fd);
 			return;
 		}
 		left -= n;
@@ -610,11 +748,13 @@ static qboolean MCP_SendBlob (byte *data, int len)
 	fd_set	w;
 	struct timeval tv;
 
+	if (mcp_reply_fd < 0)
+		return false;
 	stop = Sys_DoubleTime () + 0.1;
 	sent = 0;
-	while (sent < len && mcp_client_fd >= 0)
+	while (sent < len && mcp_reply_fd >= 0)
 	{
-		n = send (mcp_client_fd, data + sent, len - sent, 0);
+		n = send (mcp_reply_fd, data + sent, len - sent, 0);
 		if (n > 0)
 		{
 			sent += n;
@@ -624,22 +764,22 @@ static qboolean MCP_SendBlob (byte *data, int len)
 		{
 			if (Sys_DoubleTime () > stop)
 			{
-				MCP_CloseClient ();
+				MCP_CloseFd (mcp_reply_fd);
 				return false;
 			}
 			FD_ZERO (&w);
-			FD_SET (mcp_client_fd, &w);
+			FD_SET (mcp_reply_fd, &w);
 			tv.tv_sec = 0;
 			tv.tv_usec = 20000;
-			select (mcp_client_fd + 1, NULL, &w, NULL, &tv);
+			select (mcp_reply_fd + 1, NULL, &w, NULL, &tv);
 			continue;
 		}
 		if (n < 0 && errno == EINTR)
 			continue;
-		MCP_CloseClient ();
+		MCP_CloseFd (mcp_reply_fd);
 		return false;
 	}
-	return mcp_client_fd >= 0;
+	return mcp_reply_fd >= 0;
 }
 
 /*
@@ -653,14 +793,20 @@ metadata + blob_bytes) followed by the framed RGB blob.
 static void MCP_SendObservation (mcap_snapshot_t *snap)
 {
 	char	result[MCP_REPLY_MAX];
-	int	n, bytes;
+	int	n, bytes, savedfd;
 
+	// the deferred reply targets the connection that asked for the
+	// capture; the caller's own reply target is restored
+	savedfd = mcp_reply_fd;
+	mcp_reply_fd = mcp_observe_fd;
+	mcp_observe_fd = -1;
 	n = MCP_FormatState (result, sizeof (result));
 	if (n < 0)
 	{
 		MCP_Reply (mcp_observe_id, false, "INVALID_CONTEXT",
 			"state snapshot overflow");
 		MCAP_Release ();
+		mcp_reply_fd = savedfd;
 		return;
 	}
 	bytes = snap->w * snap->h * 3;
@@ -679,6 +825,7 @@ static void MCP_SendObservation (mcap_snapshot_t *snap)
 	MCP_Reply (mcp_observe_id, true, NULL, result);
 	MCP_SendBlob (snap->data, bytes);
 	MCAP_Release ();
+	mcp_reply_fd = savedfd;
 }
 
 /*
@@ -694,7 +841,7 @@ static void MCP_FinishAct (qboolean interrupted)
 {
 	char result[MCP_REPLY_MAX];
 	char aid[256];
-	int elapsed;
+	int elapsed, savedfd;
 
 	if (!mcp_act_active)
 		return;
@@ -724,7 +871,13 @@ static void MCP_FinishAct (qboolean interrupted)
 		e->result[sizeof (e->result) - 1] = 0;
 	}
 
+	// the deferred reply targets the connection that armed the act; the
+	// caller's own reply target (an enclosing handler) is restored
+	savedfd = mcp_reply_fd;
+	mcp_reply_fd = mcp_act_fd;
+	mcp_act_fd = -1;
 	MCP_Reply (mcp_act_id, true, NULL, result);
+	mcp_reply_fd = savedfd;
 	MCP_EndInput ();
 	mcp_act_active = 0;
 	// the deferred reply is how a long action proved it was alive
@@ -844,17 +997,14 @@ void MCP_NoteWorldSpawn (void)
 MCP_CheckLease
 
 Expire the controller lease after 2 s without a heartbeat. Expiry
-clears MCP input so no synthetic button survives a dead controller.
+clears MCP input so no synthetic button survives a dead controller,
+even mid-action: a deferred act is interrupted at expiry instead of
+running to its wall cap on a silent lease.
 ==================
 */
 static void MCP_CheckLease (void)
 {
 	if (!mcp_lease_active)
-		return;
-	// an action in flight is activity: its own wall cap bounds it, and
-	// its completion refreshes the lease (the client cannot heartbeat
-	// while the reply is deferred)
-	if (mcp_act_active)
 		return;
 	if (Sys_DoubleTime () - mcp_lease_lastbeat > MCP_LEASE_TIMEOUT)
 		MCP_ClearControl ();
@@ -1087,6 +1237,7 @@ static void MCP_HandleLine (char *line)
 				"observe already pending");
 			return;
 		}
+		mcp_observe_fd = mcp_reply_fd;
 		strcpy (mcp_observe_id, id);
 		after = MCP_FieldInt (line, "after_frame");
 		tmo = MCP_FieldInt (line, "timeout_ms");
@@ -1263,6 +1414,7 @@ static void MCP_HandleLine (char *line)
 
 		MCP_BeginInput (fwd, strafe, vert, yaw, pitch, attack,
 			jump, impulse, run ? true : false);
+		mcp_act_fd = mcp_reply_fd;
 		strcpy (mcp_act_id, id);
 		strncpy (mcp_act_aid, aida, sizeof (mcp_act_aid) - 1);
 		mcp_act_aid[sizeof (mcp_act_aid) - 1] = 0;
@@ -1284,44 +1436,46 @@ static void MCP_HandleLine (char *line)
 
 /*
 ==================
-MCP_PollClient
+MCP_PollSlot
 
-Drain complete lines within the poll budget. Oversize lines are
-dropped and counted, never grown.
+Drain complete lines from one connection within the poll budget.
+Oversize lines are dropped and counted, never grown.
 ==================
 */
-static void MCP_PollClient (double stop)
+static void MCP_PollSlot (int i, double stop)
 {
+	mcp_slot_t *s;
 	char *nl;
 	int n;
 
+	s = &mcp_slots[i];
 	for (;;)
 	{
 		if (Sys_DoubleTime () >= stop)
 			return;
-		if (mcp_client_fd < 0)
+		if (s->fd < 0)
 			return;
-		if (mcp_line_len >= MCP_LINE_MAX)
+		if (s->len >= MCP_LINE_MAX)
 		{
-			mcp_line_len = 0;
+			s->len = 0;
 			mcp_oversize_drops++;
 			continue;
 		}
-		n = recv (mcp_client_fd, mcp_line + mcp_line_len,
-			MCP_LINE_MAX - mcp_line_len, 0);
+		n = recv (s->fd, s->line + s->len, MCP_LINE_MAX - s->len, 0);
 		if (n > 0)
 		{
-			mcp_line_len += n;
-			mcp_line[mcp_line_len] = 0;
-			while ((nl = strchr (mcp_line, '\n')) != NULL)
+			s->len += n;
+			s->line[s->len] = 0;
+			while ((nl = strchr (s->line, '\n')) != NULL)
 			{
 				*nl = 0;
-				MCP_HandleLine (mcp_line);
-				if (mcp_client_fd < 0)
+				mcp_reply_fd = s->fd;
+				MCP_HandleLine (s->line);
+				if (s->fd < 0)
 					return;
 				n = strlen (nl + 1);
-				memmove (mcp_line, nl + 1, n + 1);
-				mcp_line_len = n;
+				memmove (s->line, nl + 1, n + 1);
+				s->len = n;
 				if (Sys_DoubleTime () >= stop)
 					return;
 			}
@@ -1329,13 +1483,33 @@ static void MCP_PollClient (double stop)
 		}
 		if (n == 0)
 		{
-			MCP_CloseClient ();
+			MCP_CloseSlot (i);
 			return;
 		}
 		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
 			return;
-		MCP_CloseClient ();
+		MCP_CloseSlot (i);
 		return;
+	}
+}
+
+/*
+==================
+MCP_PollClient
+
+Drain every occupied slot within the poll budget, so one quiet or
+stalled peer never starves the other connection.
+==================
+*/
+static void MCP_PollClient (double stop)
+{
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+	{
+		if (Sys_DoubleTime () >= stop)
+			return;
+		MCP_PollSlot (i, stop);
 	}
 }
 
@@ -1346,14 +1520,22 @@ MCP_Init
 */
 void MCP_Init (void)
 {
+	int i;
+
 	Cvar_RegisterVariable (&mcp_enabled);
 	Cvar_RegisterVariable (&mcp_port);
 
 	mcp_listen_fd = -1;
-	mcp_client_fd = -1;
+	for (i = 0; i < MCP_SLOTS; i++)
+	{
+		mcp_slots[i].fd = -1;
+		mcp_slots[i].len = 0;
+	}
+	mcp_reply_fd = -1;
+	mcp_act_fd = -1;
+	mcp_observe_fd = -1;
 	mcp_token[0] = 0;
 	mcp_token_path[0] = 0;
-	mcp_line_len = 0;
 	mcp_oversize_drops = 0;
 	mcp_retry_at = 0;
 
@@ -1398,11 +1580,19 @@ void MCP_Poll (void)
 		if (rc == 1)
 			MCP_SendObservation (&snap);
 		else if (rc == -1)
+		{
+			mcp_reply_fd = mcp_observe_fd;
+			mcp_observe_fd = -1;
 			MCP_Reply (mcp_observe_id, false, "FRAME_TIMEOUT",
 				"no rendered frame within the window");
+		}
 		else if (rc == -2)
+		{
+			mcp_reply_fd = mcp_observe_fd;
+			mcp_observe_fd = -1;
 			MCP_Reply (mcp_observe_id, false, "RENDER_UNAVAILABLE",
 				"frame readback unavailable");
+		}
 	}
 
 	if (mcp_listen_fd < 0)
@@ -1414,29 +1604,25 @@ void MCP_Poll (void)
 
 	for (;;)
 	{
+		int slot;
+
 		fd = accept (mcp_listen_fd, NULL, NULL);
 		if (fd < 0)
 			break;
-		if (mcp_client_fd >= 0)
+		// The control layer opens one connection per call. Take a free
+		// slot; when both are busy, reap a slot whose peer already said
+		// goodbye; a live pair keeps the endpoint and the new fd drops.
+		slot = MCP_FreeSlot ();
+		if (slot < 0)
+			slot = MCP_ReapEofSlot ();
+		if (slot < 0)
 		{
-			// The control layer opens one connection per call. If the
-			// previous client already said goodbye, reap it and take
-			// this one; a still-live client keeps the endpoint.
-			char probe;
-			int pn;
-
-			pn = recv (mcp_client_fd, &probe, 1, MSG_PEEK);
-			if (!(pn == 0 || (pn < 0 && errno != EAGAIN
-				&& errno != EWOULDBLOCK && errno != EINTR)))
-			{
-				close (fd);
-				continue;
-			}
-			MCP_CloseClient ();
+			close (fd);
+			continue;
 		}
 		MCP_SetNonblock (fd);
-		mcp_client_fd = fd;
-		mcp_line_len = 0;
+		mcp_slots[slot].fd = fd;
+		mcp_slots[slot].len = 0;
 		if (Sys_DoubleTime () >= stop)
 			return;
 	}
@@ -1451,7 +1637,7 @@ MCP_Shutdown
 */
 void MCP_Shutdown (void)
 {
-	MCP_CloseClient ();
+	MCP_CloseAll ();
 	if (mcp_listen_fd >= 0)
 		close (mcp_listen_fd);
 	mcp_listen_fd = -1;

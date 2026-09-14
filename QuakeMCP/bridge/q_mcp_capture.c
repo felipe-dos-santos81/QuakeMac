@@ -66,6 +66,21 @@ void MCAP_Request (unsigned after_frame, double timeout_secs)
 
 /*
 ==================
+MCAP_Cancel
+
+Drop an outstanding request or a captured-but-undelivered slot when the
+requesting connection goes away.
+==================
+*/
+void MCAP_Cancel (void)
+{
+	mcap_req_active = false;
+	mcap_pending = -1;
+	mcap_pinned = -1;
+}
+
+/*
+==================
 MCAP_Busy
 
 True while a request is waiting for its frame, a capture awaits its

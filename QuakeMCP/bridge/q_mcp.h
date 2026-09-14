@@ -40,6 +40,7 @@ typedef struct
 } mcap_snapshot_t;
 
 void MCAP_Request (unsigned after_frame, double timeout_secs);
+void MCAP_Cancel (void);
 void MCAP_Frame (void);
 qboolean MCAP_Busy (void);
 // 1 = out filled (call MCAP_Release once the blob is sent), 0 = waiting,
