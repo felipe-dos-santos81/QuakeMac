@@ -6,7 +6,9 @@ import socket
 from .models import EngineDisconnected
 
 SEND_TIMEOUT = 5.0
-RECV_TIMEOUT = 5.0
+# Must exceed the bridge's action wall cap (MCP_ACT_CAP, 5 s) so a capped
+# action returns its interrupted completion reply instead of a timeout.
+RECV_TIMEOUT = 8.0
 
 _msg_ids = itertools.count(1)
 

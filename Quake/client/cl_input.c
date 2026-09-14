@@ -24,6 +24,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+#ifdef QUAKE_MCP
+#include "q_mcp.h"
+#endif
+
 /*
 ===============================================================================
 
@@ -369,6 +373,14 @@ void CL_SendMove (usercmd_t *cmd)
 		bits |= 2;
 	in_jump.state &= ~2;
 	
+#ifdef QUAKE_MCP
+	bits |= MCP_Buttons ();
+	{
+		int	im = MCP_Impulse ();
+		if (im)
+			in_impulse = im;
+	}
+#endif
     MSG_WriteByte (&buf, bits);
 
     MSG_WriteByte (&buf, in_impulse);

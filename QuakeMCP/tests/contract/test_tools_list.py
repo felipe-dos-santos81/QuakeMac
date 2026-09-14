@@ -24,13 +24,13 @@ async def _session():
     return session_cm
 
 
-def test_tools_list_has_exactly_four():
+def test_tools_list_has_exactly_five():
     async def main():
         async with create_connected_server_and_client_session(mcp) as s:
             await s.initialize()
             tools = await s.list_tools()
             return sorted(t.name for t in tools.tools)
-    assert _run(main()) == ["quake_attach", "quake_start",
+    assert _run(main()) == ["quake_act", "quake_attach", "quake_start",
                             "quake_status", "quake_stop"]
 
 

@@ -114,18 +114,18 @@ QUAKE_PLATFORM_OBJS = $(QUAKE_BUILDDIR)/platform/gl_vidsdl.o \
 QUAKE_OBJS = $(QUAKE_CORE_OBJS) $(QUAKE_PLATFORM_OBJS)
 
 # ── QuakeMCP bridge (Tasks 2/5/7 extend QUAKE_MCP_OBJS) ────────────────────
-# Built only when QUAKE_MCP=1 is passed to make. This task lists only q_mcp.o;
-# q_mcp_input.o / q_mcp_capture.o land in Tasks 5/7.
+# Built only when QUAKE_MCP=1 is passed to make. q_mcp_capture.o lands in Task 7.
 ifdef QUAKE_MCP
 QUAKE_MCP_CFLAGS = -DQUAKE_MCP -I$(CURDIR)/QuakeMCP/bridge
 QUAKE_RELEASE_CFLAGS += $(QUAKE_MCP_CFLAGS)
 QUAKE_DEBUG_CFLAGS += $(QUAKE_MCP_CFLAGS)
-QUAKE_MCP_OBJS = $(QUAKE_BUILDDIR)/mcp/q_mcp.o
+QUAKE_MCP_OBJS = $(QUAKE_BUILDDIR)/mcp/q_mcp.o \
+	$(QUAKE_BUILDDIR)/mcp/q_mcp_input.o
 endif
 $(QUAKE_BUILDDIR)/mcp:
 	mkdir -p $(QUAKE_BUILDDIR)/mcp
 $(QUAKE_BUILDDIR)/mcp/%.o: QuakeMCP/bridge/%.c | $(QUAKE_BUILDDIR)/mcp
-	$(CC) $(CFLAGS) $(QUAKE_MCP_CFLAGS) -o $@ -c $<
+	$(CC) $(CFLAGS) -o $@ -c $<
 
 # ── QuakeWorld objects ───────────────────────────────────────────────────────
 # Server objects (Makefile.Linux QWSV_OBJS, verbatim): the first 15 compile

@@ -16,6 +16,7 @@ of the License, or (at your option) any later version.
 // Cbuf_/Cvar_ paths the in-game console uses.
 
 #include "quakedef.h"
+#include "q_mcp.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -24,6 +25,7 @@ of the License, or (at your option) any later version.
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <stdlib.h>
 
 #define MCP_LINE_MAX	65536
 #define MCP_TOKEN_BYTES	32
@@ -32,13 +34,15 @@ of the License, or (at your option) any later version.
 #define MCP_EXEC_MAX	4096
 #define MCP_TAIL_LINES	8
 #define MCP_REPLY_MAX	16384
-#define MCP_EXEC_MAX	4096
-#define MCP_TAIL_LINES	8
+#define MCP_LEASE_TIMEOUT	2.0
+#define MCP_ACT_CAP	5.0
 
 extern char	*con_text;
 extern int	con_totallines;
 extern int	con_current;
 extern int	con_linewidth;
+
+extern kbutton_t	in_attack, in_jump;
 
 cvar_t	mcp_enabled = {"mcp_enabled", "0"};
 cvar_t	mcp_port = {"mcp_port", "28900"};
@@ -51,6 +55,28 @@ static char	mcp_line[MCP_LINE_MAX + 1];
 static int	mcp_line_len = 0;
 static int	mcp_oversize_drops = 0;
 static double	mcp_retry_at = 0;
+
+// Controller lease + bounded action state (Task 5). Lease is acquired via
+// the control op, kept alive by the hb op, and expires on 2 s wall silence.
+// An act runs over subsequent simulation ticks and replies once finished.
+#define MCP_ACT_TICKS	0
+#define MCP_ACT_DURATION	1
+
+static int	mcp_epoch;
+static int	mcp_control_rev;
+static int	mcp_lease_active;
+static char	mcp_lease_id[64];	// "l<epoch>-<control_rev>"
+static int	mcp_lease_seq;
+static double	mcp_lease_lastbeat;
+
+static int	mcp_act_active;
+static int	mcp_act_mode;
+static int	mcp_act_ticks;		// requested ticks (MCP_ACT_TICKS)
+static int	mcp_act_completed;	// ticks merged so far
+static double	mcp_act_start;		// wall clock at act start
+static double	mcp_act_duration;	// seconds requested (MCP_ACT_DURATION)
+static char	mcp_act_id[128];
+static char	mcp_act_aid[128];	// action_id echo
 
 
 /*
@@ -452,6 +478,142 @@ static void MCP_Reply (char *id, qboolean ok, char *error, char *result)
 
 /*
 ==================
+MCP_FieldFloat / MCP_FieldInt
+
+Read a top-level string field and convert. Absent or non-string fields
+yield 0 (the control layer stringifies all numeric values, so a raw
+JSON number never reaches MCP_Field).
+==================
+*/
+static float MCP_FieldFloat (char *line, char *name)
+{
+	char buf[64];
+
+	if (MCP_Field (line, name, buf, sizeof (buf)))
+		return (float)atof (buf);
+	return 0.0f;
+}
+
+static int MCP_FieldInt (char *line, char *name)
+{
+	char buf[64];
+
+	if (MCP_Field (line, name, buf, sizeof (buf)))
+		return atoi (buf);
+	return 0;
+}
+
+/*
+==================
+MCP_FinishAct
+
+Send the running action's completion reply and neutralize MCP input.
+interrupted is true when the action ended short of its target (wall
+cap, release, lease expiry). Idempotent: no-op when no action runs.
+==================
+*/
+static void MCP_FinishAct (qboolean interrupted)
+{
+	char result[MCP_REPLY_MAX];
+	char aid[256];
+	int elapsed;
+
+	if (!mcp_act_active)
+		return;
+	MCP_Escape (aid, sizeof (aid), mcp_act_aid);
+	elapsed = (int)((Sys_DoubleTime () - mcp_act_start) * 1000.0);
+	if (elapsed < 0)
+		elapsed = 0;
+	snprintf (result, sizeof (result),
+		"\"completed_ticks\":%d,\"elapsed_ms\":%d,\"interrupted\":%s,"
+		"\"action_id\":\"%s\"",
+		mcp_act_completed, elapsed, interrupted ? "true" : "false", aid);
+	MCP_Reply (mcp_act_id, true, NULL, result);
+	MCP_EndInput ();
+	mcp_act_active = 0;
+}
+
+/*
+==================
+MCP_ClearControl
+
+Release the controller lease and any running action. Used by control
+release/detach and the queue-jumping release op. Idempotent.
+==================
+*/
+static void MCP_ClearControl (void)
+{
+	mcp_control_rev++;
+	mcp_lease_active = 0;
+	mcp_lease_id[0] = 0;
+	MCP_FinishAct (true);
+	MCP_EndInput ();
+}
+
+/*
+==================
+MCP_NoteTick
+
+Called by MCP_Move once per merged simulation tick. Counts completed
+ticks toward the running action's budget.
+==================
+*/
+void MCP_NoteTick (void)
+{
+	if (mcp_act_active)
+		mcp_act_completed++;
+}
+
+/*
+==================
+MCP_CheckAction
+
+Advance the running action's completion. Runs every poll, independent
+of incoming traffic, so an action finishes on schedule even with a
+silent client. Hard 5 s wall cap interrupts a stuck action.
+==================
+*/
+static void MCP_CheckAction (void)
+{
+	double now;
+
+	if (!mcp_act_active)
+		return;
+	now = Sys_DoubleTime ();
+	if (mcp_act_mode == MCP_ACT_TICKS)
+	{
+		if (mcp_act_completed >= mcp_act_ticks)
+			MCP_FinishAct (false);
+		else if (now - mcp_act_start >= MCP_ACT_CAP)
+			MCP_FinishAct (true);
+	}
+	else
+	{
+		if (now - mcp_act_start >= mcp_act_duration)
+			MCP_FinishAct (false);
+		else if (now - mcp_act_start >= MCP_ACT_CAP)
+			MCP_FinishAct (true);
+	}
+}
+
+/*
+==================
+MCP_CheckLease
+
+Expire the controller lease after 2 s without a heartbeat. Expiry
+clears MCP input so no synthetic button survives a dead controller.
+==================
+*/
+static void MCP_CheckLease (void)
+{
+	if (!mcp_lease_active)
+		return;
+	if (Sys_DoubleTime () - mcp_lease_lastbeat > MCP_LEASE_TIMEOUT)
+		MCP_ClearControl ();
+}
+
+/*
+==================
 MCP_HandleLine
 
 exec: Cbuf_AddText (newline appended if missing); oversize 4 KiB
@@ -536,6 +698,181 @@ static void MCP_HandleLine (char *line)
 		return;
 	}
 
+	if (!strcmp (op, "control"))
+	{
+		char sub[64];
+
+		if (!MCP_Field (line, "sub", sub, sizeof (sub)))
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "control needs sub");
+			return;
+		}
+		if (!strcmp (sub, "acquire"))
+		{
+			// neutral physical controls required; a held attack/jump
+			// button means the human is mid-action -> CONTROL_BUSY
+			if ((in_attack.state & 3) || (in_jump.state & 3))
+			{
+				MCP_Reply (id, false, "CONTROL_BUSY",
+					"physical buttons held");
+				return;
+			}
+			if (!mcp_lease_active)
+			{
+				mcp_control_rev++;
+				mcp_lease_active = 1;
+				mcp_lease_seq = 0;
+				snprintf (mcp_lease_id, sizeof (mcp_lease_id),
+					"l%d-%d", mcp_epoch, mcp_control_rev);
+			}
+			mcp_lease_lastbeat = Sys_DoubleTime ();
+			snprintf (result, sizeof (result),
+				"\"lease\":\"%s\",\"epoch\":%d,\"control_rev\":%d",
+				mcp_lease_id, mcp_epoch, mcp_control_rev);
+			MCP_Reply (id, true, NULL, result);
+			return;
+		}
+		if (!strcmp (sub, "release") || !strcmp (sub, "detach"))
+		{
+			MCP_ClearControl ();
+			MCP_Reply (id, true, NULL, "\"released\":true");
+			return;
+		}
+		MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY", sub);
+		return;
+	}
+
+	if (!strcmp (op, "release"))
+	{
+		MCP_ClearControl ();
+		MCP_Reply (id, true, NULL, "\"released\":true");
+		return;
+	}
+
+	if (!strcmp (op, "hb"))
+	{
+		mcp_lease_lastbeat = Sys_DoubleTime ();
+		MCP_Reply (id, true, NULL, "\"ok\":true");
+		return;
+	}
+
+	if (!strcmp (op, "act"))
+	{
+		char leas[64], aida[128], seqs[32], epocs[32];
+		char tickss[32], durs[32];
+		char jumps[16];
+		int epoch, seq, ticks, dur;
+		int has_ticks, has_dur, jump, impulse, run, attack;
+		float fwd, strafe, vert, yaw, pitch;
+
+		if (!mcp_lease_active || mcp_lease_id[0] == 0)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "no lease");
+			return;
+		}
+		if (!MCP_Field (line, "lease", leas, sizeof (leas))
+			|| strcmp (leas, mcp_lease_id) != 0)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "lease mismatch");
+			return;
+		}
+		if (!MCP_Field (line, "epoch", epocs, sizeof (epocs)))
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "act needs epoch");
+			return;
+		}
+		epoch = atoi (epocs);
+		if (epoch != mcp_epoch)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "epoch mismatch");
+			return;
+		}
+		if (!MCP_Field (line, "seq", seqs, sizeof (seqs)))
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "act needs seq");
+			return;
+		}
+		seq = atoi (seqs);
+		if (seq <= mcp_lease_seq)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "stale seq");
+			return;
+		}
+		if (mcp_act_active)
+		{
+			MCP_Reply (id, false, "CONTROL_BUSY",
+				"action already running");
+			return;
+		}
+
+		has_ticks = MCP_Field (line, "ticks", tickss, sizeof (tickss)) > 0;
+		has_dur = MCP_Field (line, "duration_ms", durs,
+			sizeof (durs)) > 0;
+		if (has_ticks == has_dur)
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT",
+				"exactly one of ticks / duration_ms");
+			return;
+		}
+
+		fwd = MCP_FieldFloat (line, "forward");
+		strafe = MCP_FieldFloat (line, "strafe");
+		vert = MCP_FieldFloat (line, "vertical");
+		yaw = MCP_FieldFloat (line, "yaw");
+		pitch = MCP_FieldFloat (line, "pitch");
+		run = MCP_FieldInt (line, "run") != 0;
+		attack = MCP_FieldInt (line, "attack") != 0;
+		impulse = MCP_FieldInt (line, "impulse");
+		jump = 0;
+		if (MCP_Field (line, "jump", jumps, sizeof (jumps)))
+		{
+			if (!strcmp (jumps, "tap"))
+				jump = 1;
+			else if (!strcmp (jumps, "hold"))
+				jump = 2;
+		}
+		if (!MCP_Field (line, "action_id", aida, sizeof (aida)))
+			aida[0] = 0;
+
+		if (has_ticks)
+		{
+			ticks = atoi (tickss);
+			if (ticks < 1 || ticks > 72)
+			{
+				MCP_Reply (id, false, "INVALID_CONTEXT",
+					"ticks out of range 1..72");
+				return;
+			}
+			mcp_act_mode = MCP_ACT_TICKS;
+			mcp_act_ticks = ticks;
+		}
+		else
+		{
+			dur = atoi (durs);
+			if (dur < 1 || dur > 1000)
+			{
+				MCP_Reply (id, false, "INVALID_CONTEXT",
+					"duration_ms out of range 1..1000");
+				return;
+			}
+			mcp_act_mode = MCP_ACT_DURATION;
+			mcp_act_duration = dur / 1000.0;
+		}
+
+		MCP_BeginInput (fwd, strafe, vert, yaw, pitch, attack,
+			jump, impulse, run ? true : false);
+		strcpy (mcp_act_id, id);
+		strncpy (mcp_act_aid, aida, sizeof (mcp_act_aid) - 1);
+		mcp_act_aid[sizeof (mcp_act_aid) - 1] = 0;
+		mcp_act_start = Sys_DoubleTime ();
+		mcp_act_completed = 0;
+		mcp_lease_seq = seq;
+		mcp_act_active = 1;
+		// reply deferred: MCP_CheckAction sends it once the tick
+		// budget (or duration) is consumed or the wall cap fires
+		return;
+	}
+
 	MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY", op);
 }
 
@@ -613,6 +950,14 @@ void MCP_Init (void)
 	mcp_line_len = 0;
 	mcp_oversize_drops = 0;
 	mcp_retry_at = 0;
+
+	mcp_epoch = (int)getpid ();
+	mcp_control_rev = 0;
+	mcp_lease_active = 0;
+	mcp_lease_id[0] = 0;
+	mcp_lease_seq = 0;
+	mcp_lease_lastbeat = 0;
+	mcp_act_active = 0;
 }
 
 /*
@@ -631,6 +976,9 @@ void MCP_Poll (void)
 
 	if (!mcp_enabled.value)
 		return;
+
+	MCP_CheckAction ();
+	MCP_CheckLease ();
 
 	if (mcp_listen_fd < 0)
 		MCP_Setup ();
