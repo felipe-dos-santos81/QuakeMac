@@ -371,8 +371,6 @@ async def quake_start(profile: str = "local", port: int = 28900) -> dict:
     inst = None
     try:
         inst = await _offload(lifecycle.launch, profile, port=port)
-    except EngineDisconnected as e:
-        raise ValueError("%s: %s" % (e.code, e.detail))
     except QuakeMCPError as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     assert inst is not None
@@ -403,8 +401,6 @@ async def quake_attach(instance: str, port: int, token: str) -> dict:
     inst = None
     try:
         inst = await _offload(lifecycle.attach, instance, port, token)
-    except EngineDisconnected as e:
-        raise ValueError("%s: %s" % (e.code, e.detail))
     except QuakeMCPError as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     assert inst is not None
@@ -630,10 +626,7 @@ async def quake_act(
     A retried action_id replays the exact recorded frame; once that frame
     is evicted the retry is FRAME_EXPIRED, never a re-shoot.
     """
-    inst = lifecycle.get(instance)
-    if inst is None:
-        raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
-                         % (instance,))
+    inst = _instance(instance)
     if telemetry not in ("hud", "pixels_only"):
         raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
     if forward < -1.0 or forward > 1.0 or strafe < -1.0 or strafe > 1.0 \
@@ -1095,10 +1088,7 @@ async def quake_release(instance: str, reason: str = "") -> dict:
 @mcp.tool(annotations=RO_FALSE_STOP)
 async def quake_stop(instance: str) -> dict:
     """Stop an owned child. Refuses attached user-owned processes."""
-    inst = lifecycle.get(instance)
-    if inst is None:
-        raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
-                         % (instance,))
+    inst = _instance(instance)
     result = None
     try:
         result = await _offload(inst.stop)
