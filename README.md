@@ -28,7 +28,8 @@ files from a retail Quake installation yourself.
 - macOS on Apple Silicon (arm64)
 - Xcode Command Line Tools (`cc`, `make`)
 - SDL3 — `brew install sdl3 pkg-config`
-- (optional, texture tools only) Python 3 + Pillow — `pip install Pillow`
+- (optional) Python 3 + Pillow — texture tools; QuakeMCP needs Python 3.12+
+  with `mcp` and Pillow (pinned in `QuakeMCP/pyproject.toml`)
 
 ## Game data
 
@@ -104,6 +105,19 @@ python3 tools/install.py <png-or-dir>    # validates + writes TGA to game/id1/
 
 `tools/extracted/` is git-ignored — it derives from commercial game data and
 is never committed.
+
+## QuakeMCP (optional)
+
+`QuakeMCP/` adds an MCP control surface to glquake: a C bridge compiled in
+under `QUAKE_MCP=1`, plus a Python server that exposes 13 tools for movement,
+frames, telemetry, and guarded console access. Vanilla builds and
+`QuakeWorld/` are untouched.
+
+```
+make build-mcp                  # glquake + bridge (cleans first)
+```
+
+Setup, tools, and tests: [`QuakeMCP/README.md`](QuakeMCP/README.md).
 
 ## Documentation
 

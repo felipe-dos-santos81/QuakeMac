@@ -29,11 +29,11 @@ no-op macro shims, so vanilla builds and `QuakeWorld/` stay unchanged.
 ## Build
 
 ```
-make clean && make build-release QUAKE_MCP=1     # -> Quake/build-macosx/glquake
+make build-mcp                                   # -> Quake/build-macosx/glquake
 ```
 
-`make clean` matters: switching between the vanilla and MCP variants does not
-relink otherwise.
+The target cleans first: switching between the vanilla and MCP variants does
+not relink otherwise.
 
 ## Run
 
@@ -120,7 +120,7 @@ structured state, both carrying the same `frame`.
 ## Tests
 
 ```
-make clean && make build-release QUAKE_MCP=1
+make build-mcp                                                  # MCP gate
 python3 -m pytest QuakeMCP/tests/unit QuakeMCP/tests/contract   # no engine
 python3 -m pytest QuakeMCP/tests/integration                    # real binary
 ```
@@ -155,6 +155,7 @@ the repo.
 
 - `docs/engine-integration.md` — hook sites, op map, capability matrix
 - `docs/acceptance-results.md` — gates, measurements, known failures
-- `../docs/superpowers/2026-09-14-quakemcp-conformance-design.md` — current
-  design (refines `2026-09-13-quakemcp-design.md`); plan alongside it
+- `../docs/superpowers/2026-09-14-quakemcp-conformance-design.md` and
+  `2026-09-14-quakemcp-review-fixes-design.md` — current design (the latter
+  fixes the former's review findings), each with its plan alongside
 - `AGENTS.md` — subproject rules for agents

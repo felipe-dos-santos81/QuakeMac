@@ -11,7 +11,7 @@ no-op macro shim.
 ## Commands
 
 ```
-make clean && make build-release QUAKE_MCP=1                    # MCP gate
+make build-mcp                                                  # MCP gate
 make clean && make build-release build-server build-client      # vanilla gate
 python3 -m pytest QuakeMCP/tests/unit QuakeMCP/tests/contract   # no engine
 python3 -m pytest QuakeMCP/tests/integration                    # real binary
@@ -21,8 +21,8 @@ Quake/build-macosx/glquake -basedir game +mcp_enabled 1         # manual smoke
 ## Traps
 
 - **Relink staleness:** switching `QUAKE_MCP=1` on after a vanilla build does
-  not relink. `make clean` between variants; leave the MCP build in place
-  before integration tests.
+  not relink by itself. `make build-mcp` cleans first; leave the MCP build in
+  place before integration tests.
 - **Worktree game data:** a git worktree has no `game/`. Link it
   (`ln -s ../../game game`) for tests, and remove the link before committing.
 - **Test basenames must be unique** across `unit/` and `integration/`
@@ -124,14 +124,16 @@ Engine hook sites (`#ifdef QUAKE_MCP` or no-op macro shim):
 - **New tool:** every tool raises `ValueError("<CODE>: detail")` with a code
   from `models.ERROR_CODES` (the C side mirrors the wire semantics);
   read-only tools use `RO_TRUE` annotations, `quake_stop` is destructive.
-- **Vision changes:** keep the telemetry policy in
-  `vision.apply_telemetry` and the bottom-up RGB→PNG transform in
+- **Vision changes:** the telemetry policy lives in
+  `vision.validate_telemetry` / `apply_telemetry` (modes in
+  `models.TELEMETRY_MODES`); keep the bottom-up RGB→PNG transform in
   `encode_frame`; state and pixels must share one `frame`.
 
 ## Pointers
 
 - `docs/engine-integration.md` — hook inventory, op map, capability matrix
 - `docs/acceptance-results.md` — measured gates, failures, launch config
-- `../docs/superpowers/2026-09-14-quakemcp-conformance-design.md` and its
-  plan — current design (refines `2026-09-13-quakemcp-design.md`)
+- `../docs/superpowers/2026-09-14-quakemcp-conformance-design.md` and
+  `2026-09-14-quakemcp-review-fixes-design.md` — current design (the latter
+  fixes the former's review findings), each with its plan alongside
 - `../docs/superpowers/2026-08-29-quake-apple-silicon.md` — Fixes Ledger

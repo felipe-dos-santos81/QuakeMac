@@ -28,6 +28,7 @@ from a retail Quake install. The codebase is id-era C, built with Apple clang
 | `QuakeWorld/` | QuakeWorld tree — a separate copy that may drift from `Quake/`. `server/` (qwsv), `client/` (glqwcl), `progs/` (QuakeC + `qwprogs.dat`) |
 | `configs/` | Committed `autoexec-mouseonly.cfg`, meant to be copied to `game/id1/autoexec.cfg` at runtime (game data — never committed there) |
 | `tools/` | Standalone, decoupled Pillow-only texture pipeline (`extract.py`, `install.py`) |
+| `QuakeMCP/` | Optional MCP control surface for glquake — C bridge (`bridge/`), Python server (`src/quakemcp/`), pytest suites, engine-hook docs. Rules: [`QuakeMCP/AGENTS.md`](QuakeMCP/AGENTS.md) |
 | `docs/superpowers/` | One file per feature (design spec, then implementation plan); the append-only Fixes Ledger at the end of `2026-08-29-quake-apple-silicon.md` |
 | `game/` | **User territory** — game data (paks, `qwprogs.dat`, saves, configs). Git-ignored — never commit |
 | `.superpowers/` | Transient SDD agent workspaces. Git-ignored — never commit |
@@ -51,6 +52,11 @@ from a retail Quake install. The codebase is id-era C, built with Apple clang
   and translucent via two alpha draw primitives (`Draw_FillAlpha`,
   `Draw_StringAlpha` in `render/gl_draw.c`) that toggle `GL_MODULATE` /
   `GL_ALPHA_TEST` state — preserve that pattern when touching them.
+- **QuakeMCP (optional):** glquake-only MCP control surface, built with
+  `make build-mcp` (`QUAKE_MCP=1`). Every hook sits behind `#ifdef QUAKE_MCP`
+  or a no-op macro shim, so vanilla builds are behaviorally identical; its
+  invariants (lease, input merge, takeover, policy) live in
+  [`QuakeMCP/AGENTS.md`](QuakeMCP/AGENTS.md).
 - **Game data is never committed:** `game/` (paks, assets, and the loose TGA
   overrides under `game/id1/` and `game/qw/`) is user-supplied — `game/id1/`
   feeds glquake, `game/qw/` feeds qwsv/glqwcl (the QW binaries mount id1 too).
@@ -65,13 +71,17 @@ opaquely at parse time.
 `make` with no target prints the target list (the Makefile's `##` comments are
 the source of truth).
 
-**Gates** — the build is the verification; there are no tests, lint, or CI:
+**Gates** — the build is the verification for the engine trees; there is no
+lint or CI:
 
 - build oracle: `make clean && make build-release build-server build-client`
   from the repo root (must exit 0);
 - the 3-binary SIGKILL smoke protocol (launch each binary, SIGKILL it — the
   "Received signal" count in its output must be 0);
 - the Fixes Ledger (append-only record of every pass).
+
+QuakeMCP adds its own gates — `make build-mcp`, the pytest suites, and the
+manual takeover protocol: see [`QuakeMCP/AGENTS.md`](QuakeMCP/AGENTS.md).
 
 Runtime smoke checks (need user game data): `make run` / `make run-server` /
 `make run-client`.

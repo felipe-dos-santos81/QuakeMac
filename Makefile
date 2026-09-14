@@ -113,8 +113,8 @@ QUAKE_PLATFORM_OBJS = $(QUAKE_BUILDDIR)/platform/gl_vidsdl.o \
 
 QUAKE_OBJS = $(QUAKE_CORE_OBJS) $(QUAKE_PLATFORM_OBJS)
 
-# ── QuakeMCP bridge (Tasks 2/5/7 extend QUAKE_MCP_OBJS) ────────────────────
-# Built only when QUAKE_MCP=1 is passed to make.
+# ── QuakeMCP bridge (glquake only) ──────────────────────────────────────────
+# Built only when QUAKE_MCP=1 is passed to make; see QuakeMCP/AGENTS.md.
 ifdef QUAKE_MCP
 QUAKE_MCP_CFLAGS = -DQUAKE_MCP -I$(CURDIR)/QuakeMCP/bridge
 QUAKE_RELEASE_CFLAGS += $(QUAKE_MCP_CFLAGS)
@@ -193,7 +193,7 @@ QW_CLIENT_OBJS = \
 
 .DEFAULT_GOAL := help
 
-.PHONY: help objects build-release build-debug build-server \
+.PHONY: help objects build-release build-debug build-mcp build-server \
 	build-server-debug build-client check-data check-data-quake \
 	check-data-qw run run-server run-client export-textures clean
 
@@ -274,6 +274,11 @@ ifdef QUAKE_MCP
 $(QUAKE_BUILDDIR)/glquake: $(QUAKE_MCP_OBJS)
 endif
 	$(CC) -o $@ $(QUAKE_OBJS) $(QUAKE_MCP_OBJS) $(QUAKE_LDFLAGS)
+
+# Variant switches do not relink, so this target always cleans first.
+build-mcp: ## Build optimized glquake with the QuakeMCP bridge (cleans first)
+	$(MAKE) clean
+	$(MAKE) build-release QUAKE_MCP=1
 
 # ── qwsv build ───────────────────────────────────────────────────────────────
 
