@@ -84,19 +84,35 @@ class Instance:
 
         def beat():
             while not stop.wait(HEARTBEAT_SECS):
-                try:
-                    client = self.client()
-                except (EngineDisconnected, OSError):
-                    continue
-                try:
-                    client.send("hb", lease=lease, epoch=str(epoch))
-                except (EngineDisconnected, OSError):
-                    pass
-                finally:
-                    client.close()
+                if not self._heartbeat_round(lease, epoch):
+                    return
 
         self._hb_thread = threading.Thread(target=beat, daemon=True)
         self._hb_thread.start()
+
+    def _heartbeat_round(self, lease, epoch):
+        """One beat. False when the bridge says the lease is gone.
+
+        A STALE_STATE reply means human takeover, expiry or revocation:
+        drop the local lease so status stays truthful and the next
+        mutation lazily acquires a fresh one. Transport errors are
+        transient; keep beating.
+        """
+        try:
+            client = self.client()
+        except (EngineDisconnected, OSError):
+            return True
+        try:
+            reply = client.send("hb", lease=lease, epoch=str(epoch))
+        except (EngineDisconnected, OSError):
+            return True
+        finally:
+            client.close()
+        if reply.get("ok") is not True \
+                and reply.get("error") == "STALE_STATE":
+            self.clear_lease()
+            return False
+        return True
 
     def stop_keepalive(self):
         if self._hb_stop is not None:
