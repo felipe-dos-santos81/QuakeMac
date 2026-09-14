@@ -1353,20 +1353,13 @@ static void MCP_CheckAction (void)
 	if (!mcp_act_active)
 		return;
 	now = Sys_DoubleTime ();
-	if (mcp_act_mode == MCP_ACT_TICKS)
-	{
-		if (mcp_act_completed >= mcp_act_ticks)
-			MCP_FinishAct (false);
-		else if (now - mcp_act_start >= MCP_ACT_CAP)
-			MCP_FinishAct (true);
-	}
-	else
-	{
-		if (now - mcp_act_start >= mcp_act_duration)
-			MCP_FinishAct (false);
-		else if (now - mcp_act_start >= MCP_ACT_CAP)
-			MCP_FinishAct (true);
-	}
+	if ((mcp_act_mode == MCP_ACT_TICKS
+			&& mcp_act_completed >= mcp_act_ticks)
+		|| (mcp_act_mode == MCP_ACT_DURATION
+			&& now - mcp_act_start >= mcp_act_duration))
+		MCP_FinishAct (false);
+	else if (now - mcp_act_start >= MCP_ACT_CAP)
+		MCP_FinishAct (true);
 }
 
 /*

@@ -242,6 +242,7 @@ void Host_InitLocal (void)
 	Cvar_RegisterVariable (&temp1);
 
 	Host_FindMaxClients ();
+	
 	host_time = 1.0;		// so a think at time 0 won't get called
 }
 
@@ -658,7 +659,7 @@ void _Host_Frame (float time)
 
 // keep the random time dependent
 	rand ();
-
+	
 #ifdef QUAKE_MCP
 	MCP_Poll ();
 #endif

@@ -1323,7 +1323,7 @@ Validation: make clean && make build-release build-server build-client
 
 ### QuakeMCP: engine bridge, MCP server, acceptance run (feature)
 Commits: 8a60ea6, 65112a7, fc7f44b, 4101e0c, a849a4b, 5e93f24, 93c61ab,
-9b8e8eb, f3098e6 and the Task 10 fixes. Spec + plan:
+9b8e8eb, f3098e6, 5746b0e, 7a72b19. Spec + plan:
 docs/superpowers/2026-09-13-quakemcp-design.md and
 2026-09-13-quakemcp-plan.md. A 13-tool MCP server
 (QuakeMCP/src/quakemcp) supervises the instrumented glquake

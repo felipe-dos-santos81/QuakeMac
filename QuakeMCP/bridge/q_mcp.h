@@ -40,6 +40,7 @@ void MCP_ModalClosed (qboolean confirmed);
 typedef struct
 {
 	byte	*data;			// RGB, bottom-up (glReadPixels order)
+	int	bufsize;		// bytes allocated at data
 	int	w, h;
 	int	viewport[4];		// glx, gly, glwidth, glheight
 	int	hud_rect[4];		// hud strip in top-down image coords
