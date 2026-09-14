@@ -2,23 +2,31 @@
 
 Run date: 2026-09-14. Platform: macOS/arm64 (Apple Silicon), Apple clang,
 SDL3, native OpenGL renderer. Branch `fix/quakemcp-conformance`, accepted
-at the round tip `48120a4` plus the acceptance commit recorded in the
-Fixes Ledger. Game data: local retail install mounted at `game/` (never
-committed); every integration module ran against the real engine, none
-skipped.
+at the round tip `58fa94f` plus the final-review fix commit `091e0c9`;
+the suite counts below were re-verified on `091e0c9`. Game data: local
+retail install mounted at `game/` (never committed); every integration
+module ran against the real engine, none skipped.
 
 ## Verification set
 
 | Command | Result |
 |---|---|
 | `make clean && make build-release build-server build-client` | exit 0 |
-| `python3 -m pytest QuakeMCP/tests/unit QuakeMCP/tests/contract -v` | 58 passed (38 unit + 20 contract) |
+| `python3 -m pytest QuakeMCP/tests/unit QuakeMCP/tests/contract -v` | 59 passed (39 unit + 20 contract) |
 | `make clean && make build-release QUAKE_MCP=1` | exit 0 |
-| `python3 -m pytest QuakeMCP/tests/integration -v` | 18 passed, 0 skipped |
+| `python3 -m pytest QuakeMCP/tests/integration -v` | 19 passed, 0 skipped |
 | SIGKILL smoke, `glquake` (vanilla, game data loaded) | 0 `Received signal` lines (488 log lines) |
 | SIGKILL smoke, `qwsv` (vanilla) | 0 `Received signal` lines (24 log lines) |
 | SIGKILL smoke, `glqwcl` (vanilla) | 0 `Received signal` lines (129 log lines) |
 | Autonomous loop through the real stdio server | PASS: 13 tools; frame 32 -> 44 over a 12-tick act; receipt `done`; no orphaned engines |
+
+The SIGKILL smoke and the autonomous loop were measured at `58fa94f`.
+The final-review fix commit `091e0c9` (version gate moved below auth per
+design §3.1; `KNOWN_OPS` gains `tail`/`status`; a third-connection test
+added; impulse validator ASCII-hardened; act clamp assertion tightened)
+re-ran the full unit/contract (59) and integration (19, 0 skipped)
+suites on the tip; the smoke and loop paths are unaffected by those
+edits.
 
 ## Launch command and MCP client configuration
 
@@ -91,7 +99,7 @@ in-memory test helper) and drove one end-to-end session:
 | Image transport and frame identity | PASS | `test_observe.py`, `test_act.py` and `test_modal.py` receive real image blocks whose structured `frame` matches the state snapshot; the loop's PNG block above; `test_vision.py` (unit) pins the bottom-up readback transform, resize/crop mapping and telemetry policy. |
 | Save/lifecycle safety | PASS | `test_lifecycle.py::test_lifecycle_tools`: save/list/load round trip, owned `stop`, second `stop` -> `ENGINE_DISCONNECTED`; `contract/test_policy.py`: missing-slot/traversal/overwrite guards, attached-instance stop refusal, console allowlist removals (`save`, `load`, `connect`, `disconnect`). |
 | Vision with a model | ENVIRONMENT-BLOCKED | Transport is verified (image blocks plus telemetry above), but no external vision model exists in this environment, so threat/HUD recognition accuracy is not claimed; transport success is not evidence of accuracy. |
-| Regression | PASS | The vanilla gate exits 0 and each vanilla binary survives the SIGKILL smoke with 0 `Received signal` lines; `QuakeWorld/` is untouched by the round; all 18 integration tests ran (0 skipped) and the 58 unit/contract tests pass. |
+| Regression | PASS | The vanilla gate exits 0 and each vanilla binary survives the SIGKILL smoke with 0 `Received signal` lines; `QuakeWorld/` is untouched by the round; all 19 integration tests ran (0 skipped) and the 59 unit/contract tests pass. |
 
 ## Known limitations
 

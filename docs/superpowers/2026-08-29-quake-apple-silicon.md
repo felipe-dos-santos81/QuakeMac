@@ -1403,3 +1403,15 @@ python3 -m pytest QuakeMCP/tests/unit QuakeMCP/tests/contract -v
 0 skipped); 3-binary SIGKILL smoke 0 "Received signal" for
 glquake/qwsv/glqwcl; autonomous stdio loop pass (13 tools, frame 32 -> 44
 over a 12-tick act, no orphaned engines).
+Follow-up: 091e0c9 final-review touch-ups (version gate moved below auth
+per design §3.1; KNOWN_OPS gains tail/status; a third-connection test so
+the acceptance citation is test-backed; impulse validator
+ASCII-hardened; act clamp assertion pinned at 70.0 +/- 0.1). Re-verified
+on the tip: 59 unit/contract, 19 integration, 0 skipped.
+Deferred (triaged and accepted at the final whole-branch review; not
+merge blockers): SO_NOSIGPIPE / MCP_Send deadline hardening; shielded
+best-effort mode restore for cancelled world ops; ActOut typing; the
+telemetry-not-hashed replay nuance; a C-side receipt-ring wrap/empty-body
+harness; test_death/test_modal binary-skip guards; KNOWN_OPS `hb`;
+MCP_REPLY_MAX mid-escape truncation; MCP_ReplyMutation escape-buffer
+sizing; the capture/hash module split when q_mcp.c is next touched.
