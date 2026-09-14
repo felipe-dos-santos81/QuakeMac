@@ -375,15 +375,16 @@ void CL_SendMove (usercmd_t *cmd)
 	
 #ifdef QUAKE_MCP
 	bits |= MCP_Buttons ();
-	{
-		int	im = MCP_Impulse ();
-		if (im)
-			in_impulse = im;
-	}
 #endif
     MSG_WriteByte (&buf, bits);
 
+#ifdef QUAKE_MCP
+	// a pending human impulse owns its frame; the MCP one-shot stays
+	// latched (MCP_Impulse clears on read) and goes out next send
+	MSG_WriteByte (&buf, in_impulse ? in_impulse : MCP_Impulse ());
+#else
     MSG_WriteByte (&buf, in_impulse);
+#endif
 	in_impulse = 0;
 
 #ifdef QUAKE2
