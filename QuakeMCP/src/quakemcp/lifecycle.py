@@ -14,7 +14,11 @@ import time
 from .engine import BridgeClient
 from .models import EngineDisconnected, QuakeMCPError
 
-TOKEN_WAIT_SECS = 10.0
+# Token wait covers a plain (no -nosound) start: the CoreAudio device
+# open on this host can stall S_Init for ~15 s before MCP_Init writes
+# the token. 10 s failed the lifecycle launch; 30 s is behavior-neutral
+# for users (only a longer failure wait).
+TOKEN_WAIT_SECS = 30.0
 PING_RETRIES = 3
 HEARTBEAT_SECS = 0.5
 

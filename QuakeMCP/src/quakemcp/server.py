@@ -21,8 +21,11 @@ from mcp.types import (CallToolResult, ImageContent, TextContent,
                        ToolAnnotations)
 
 from . import lifecycle, vision
-from .models import (ActOut, EngineDisconnected, Observation, ObserveOut,
-                     QuakeMCPError, STATE_KEYS, StateOut)
+from .models import (ActOut, CAPABILITIES, CONFIG_ACCESS_PREFIX,
+                     CONFIG_ACCESS_WRITE, CONFIG_CVARS, CONSOLE_COMMANDS,
+                     EngineDisconnected, KEY_CODES, Observation, ObserveOut,
+                     QuakeMCPError, STATE_KEYS, StateOut, UI_CONTEXTS,
+                     gameplay_ready, validate_map_id, validate_save_slot)
 
 mcp = FastMCP("quakemcp")
 
@@ -32,73 +35,13 @@ RO_FALSE = ToolAnnotations(readOnlyHint=False)
 RO_FALSE_STOP = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
-# ---- guarded console / config policy (Task 8) -------------------------------
-#
-# Raw console scripting stays disabled: quake_console takes a registered
-# command plus validated argument tokens, never a free-form string. The
-# allowlist mirrors what the design's console tool may run; every other
-# command is POLICY_DENIED before it reaches the engine.
+# The console/config/UI allowlists live in models.py: one policy
+# definition, shared with the capability manifest. quake_console takes a
+# registered command plus validated argument tokens, never a free-form
+# string; every other command is POLICY_DENIED before it reaches the
+# engine.
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-_MAP_RE = re.compile(r"^[A-Za-z0-9_*-]{1,64}$")
-_SLOT_RE = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
-_GIVE_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
-_CONNECT_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
-
-# command -> (arg count, validator name or None)
-CONSOLE_COMMANDS = {
-    "status": (0, None),
-    "version": (0, None),
-    "skill": (1, "skill"),
-    "god": (0, None),
-    "noclip": (0, None),
-    "give": (1, "give"),
-    "impulse": (1, "impulse"),
-    "kill": (0, None),
-    "pause": (1, "pause"),
-    "save": (1, "slot"),
-    "load": (1, "slot"),
-    "map": (1, "map"),
-    "restart": (0, None),
-    "changelevel": (1, "map"),
-    "connect": (1, "connect"),
-    "disconnect": (0, None),
-    "quit": (0, None),
-    "screenshot": (0, None),
-    "toggleconsole": (0, None),
-}
-
-# Curated settings from the engine's real cvar set: input, view, audio,
-# and the accessibility knobs. `access_*` names are readable but only the
-# allowlisted ones writable (several hold command strings).
-CONFIG_CVARS = frozenset({
-    "sensitivity", "m_pitch", "m_yaw", "m_forward", "m_side", "m_filter",
-    "lookspring", "lookstrafe", "in_mouse", "in_dgamouse",
-    "cl_forwardspeed", "cl_backspeed", "cl_sidespeed", "cl_upspeed",
-    "cl_movespeedkey", "cl_yawspeed", "cl_pitchspeed", "cl_anglespeedkey",
-    "cl_autofire", "cl_bob", "cl_bobcycle", "cl_bobup", "cl_rollangle",
-    "cl_rollspeed", "cl_pitchdriftspeed",
-    "scr_viewsize", "scr_fov", "scr_conspeed", "scr_centertime",
-    "scr_showpause", "scr_showram", "scr_showturtle", "crosshair",
-    "gl_triplebuffer", "gl_picmip", "gl_ztrick", "gl_finish", "gl_clear",
-    "gl_subdivide_size", "gl_max_size", "gl_affinemodels", "gl_smoothmodels",
-    "gl_polyblend", "gl_flashblend",
-    "host_maxfps", "host_timescale", "v_gamma", "vid_mode",
-    "volume", "bgmvolume", "_snd_mixahead", "bgmbuffer", "loadas8bit",
-    "ambient_level", "ambient_fade", "snd_noextraupdate",
-})
-CONFIG_ACCESS_PREFIX = "access_"
-CONFIG_ACCESS_WRITE = frozenset({"access_mouseonly"})
-
-KEY_CODES = {
-    "escape": 27, "enter": 13, "space": 32, "tab": 9, "backspace": 127,
-    "up": 128, "down": 129, "left": 130, "right": 131,
-    "ins": 147, "del": 148, "pgdn": 149, "pgup": 150, "home": 151,
-    "end": 152, "pause": 255,
-}
-KEY_CODES.update({"f%d" % n: 134 + n for n in range(1, 13)})
-
-UI_CONTEXTS = {"game": 0, "console": 1, "message": 2, "menu": 3}
 
 SAVE_WAIT_SECS = 10.0
 WORLD_WAIT_SECS = 30.0
@@ -304,52 +247,18 @@ def _save_path(inst, slot):
     return os.path.join(_gamedir(inst), slot + ".sav")
 
 
-def _map_id(value):
-    if not _MAP_RE.match(value) or ".." in value:
-        raise ValueError("POLICY_DENIED: bad map id %r" % (value,))
-    return value
-
-
-def _save_slot(value):
-    if not _SLOT_RE.match(value):
-        raise ValueError("POLICY_DENIED: bad save slot %r" % (value,))
-    return value
-
-
-def _console_arg(validator, value):
-    if validator == "skill":
-        if value not in ("0", "1", "2", "3"):
-            raise ValueError("INVALID_CONTEXT: skill must be 0..3")
-    elif validator == "impulse":
-        if not value.isdigit() or not 0 <= int(value) <= 255:
-            raise ValueError("INVALID_CONTEXT: impulse must be 0..255")
-    elif validator == "pause":
-        if value not in ("0", "1"):
-            raise ValueError("INVALID_CONTEXT: pause must be 0 or 1")
-    elif validator == "give":
-        if not _GIVE_RE.match(value):
-            raise ValueError("POLICY_DENIED: bad give item %r" % (value,))
-    elif validator == "slot":
-        _save_slot(value)
-    elif validator == "map":
-        _map_id(value)
-    elif validator == "connect":
-        if not _CONNECT_RE.match(value) or ".." in value:
-            raise ValueError("POLICY_DENIED: bad connect target %r" % (value,))
-    return value
-
-
 def _console_line(command, args):
+    """Validate one allowlisted command line; returns (line, class)."""
     spec = CONSOLE_COMMANDS.get(command)
     if spec is None:
         raise ValueError("POLICY_DENIED: command %r not allowed" % (command,))
-    count, validator = spec
+    count, validator, cls = spec
     args = list(args)
     if len(args) != count:
         raise ValueError("INVALID_CONTEXT: %s takes %d argument(s)"
                          % (command, count))
-    checked = [_console_arg(validator, str(a)) for a in args] if count else []
-    return " ".join([command] + checked)
+    checked = [validator(str(a)) for a in args] if count else []
+    return " ".join([command] + checked), cls
 
 
 def _config_known(name):
@@ -370,14 +279,35 @@ async def _wait_world(inst, before, timeout=WORLD_WAIT_SECS):
 
 
 @mcp.tool(annotations=RO_TRUE)
-async def quake_status(instance: str = "") -> dict:
-    """Report connection, instance and controller state."""
+async def quake_status(instance: str = "", action_id: str = "") -> dict:
+    """Report connection, instance, controller state and capabilities.
+
+    Merges the bridge ping and state snapshot with the static capability
+    manifest. `action` is the bridge receipt ledger's answer: the named
+    action's latest receipt, or the newest receipt when action_id is
+    omitted; a fresh instance with no receipts reports action None (an
+    explicit action_id that matches nothing is an error).
+    """
     inst = _instance(instance)
-    reply = await _offload(_bridge, inst, "ping")
-    ready = reply.get("ok") is True and reply.get("result", {}).get(
-        "ready") is True
-    return {"instance": instance, "pid": inst.pid, "owned": inst.owned,
-            "bridge_ready": ready}
+    ping = await _offload(_bridge_ok, inst, "ping")
+    state = await _offload(_bridge_ok, inst, "state")
+    if action_id:
+        action = await _offload(_bridge_ok, inst, "status",
+                                action_id=action_id)
+    else:
+        try:
+            action = await _offload(_bridge_ok, inst, "status")
+        except ValueError as e:
+            if not str(e).startswith("INVALID_CONTEXT"):
+                raise
+            action = None
+    out = {"instance": instance, "pid": inst.pid, "owned": inst.owned,
+           "bridge_ready": ping.get("ready") is True,
+           "gameplay_ready": gameplay_ready(state),
+           "lease_held": bool(inst.lease),
+           "capabilities": CAPABILITIES, "action": action}
+    out.update(state)
+    return out
 
 
 @mcp.tool(annotations=RO_TRUE)
@@ -400,7 +330,13 @@ async def quake_state(instance: str) -> StateOut:
 
 @mcp.tool(annotations=RO_FALSE)
 async def quake_start(profile: str = "local", port: int = 28900) -> dict:
-    """Launch a preconfigured executable; wait for authenticated ready."""
+    """Launch a preconfigured executable; wait for authenticated ready.
+
+    An owned session starts in stepped mode, so the simulation is frozen
+    between actions; the result reports `mode`. If physical attack/jump
+    buttons are held at that instant the acquire is refused
+    (CONTROL_BUSY) and the session stays realtime with a `reason`.
+    """
     if not isinstance(profile, str) or profile not in lifecycle.PROFILES:
         raise ValueError("INVALID_CONTEXT: unknown profile %r" % (profile,))
     if not isinstance(port, int) or not 1 <= port <= 65535:
@@ -413,8 +349,21 @@ async def quake_start(profile: str = "local", port: int = 28900) -> dict:
     except QuakeMCPError as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     assert inst is not None
-    return {"instance": inst.instance_id, "pid": inst.pid,
-            "bridge_ready": True}
+    out = {"instance": inst.instance_id, "pid": inst.pid,
+           "bridge_ready": True}
+    async with _cancel_releases(inst):
+        try:
+            await _offload(_mutate, inst, "control", sub="mode",
+                           mode="stepped")
+        except ValueError as e:
+            code = str(e).split(":", 1)[0]
+            if code not in ("CONTROL_BUSY", "STALE_STATE"):
+                raise
+            out["mode"] = "realtime"
+            out["reason"] = str(e)
+            return out
+    out["mode"] = "stepped"
+    return out
 
 
 @mcp.tool(annotations=RO_FALSE)
@@ -659,7 +608,11 @@ async def quake_act(
 
 @mcp.tool(annotations=RO_FALSE)
 async def quake_game(instance: str, operation: str, map_id: str = "",
-                     slot: str = "", overwrite: bool = False) -> dict:
+                     slot: str = "", overwrite: bool = False,
+                     action_id: str = "", lease: str = "",
+                     action_seq: int = 0, epoch: int = 0,
+                     world_generation: int = 0,
+                     control_revision: int = 0) -> dict:
     """Run a typed game-lifecycle operation.
 
     new_game -> map start, restart -> restart, load_map {map_id},
@@ -668,6 +621,9 @@ async def quake_game(instance: str, operation: str, map_id: str = "",
     generation advanced and the client is accepting input (new_game,
     restart, load_map, load) or the save file was written. `respawn` is
     unsupported until its death-flow semantics are verified.
+
+    The mutating operations carry the controller-lease envelope (see
+    quake_act); list_maps and list_saves stay reads.
     """
     inst = _instance(instance)
     if operation == "list_maps":
@@ -679,49 +635,55 @@ async def quake_game(instance: str, operation: str, map_id: str = "",
     if operation == "respawn":
         raise ValueError("UNSUPPORTED_CAPABILITY: respawn semantics "
                          "unverified")
+    env = {"action_id": action_id, "lease": lease,
+           "action_seq": action_seq, "epoch": epoch,
+           "world_generation": world_generation,
+           "control_revision": control_revision}
     if operation == "new_game":
-        return await _world_op(inst, operation, "map start")
+        return await _world_op(inst, operation, "map start", env)
     if operation == "restart":
-        return await _world_op(inst, operation, "restart")
+        return await _world_op(inst, operation, "restart", env)
     if operation == "load_map":
-        mid = _map_id(map_id)
+        mid = validate_map_id(map_id)
         if mid not in await _offload(_list_maps, inst):
             raise ValueError("INVALID_CONTEXT: unknown map %r" % (mid,))
-        return await _world_op(inst, operation, "map %s" % mid)
+        return await _world_op(inst, operation, "map %s" % mid, env)
     if operation == "save":
-        name = _save_slot(slot)
+        name = validate_save_slot(slot)
         path = _save_path(inst, name)
         if os.path.exists(path) and not overwrite:
             raise ValueError("INVALID_CONTEXT: %s exists; pass overwrite=true"
                              % name)
-        return await _save_op(inst, name, path)
+        return await _save_op(inst, name, path, env)
     if operation == "load":
-        name = _save_slot(slot)
+        name = validate_save_slot(slot)
         if not os.path.exists(_save_path(inst, name)):
             raise ValueError("INVALID_CONTEXT: no save named %r" % (name,))
-        return await _world_op(inst, operation, "load %s" % name)
+        return await _world_op(inst, operation, "load %s" % name, env)
     raise ValueError("UNSUPPORTED_CAPABILITY: operation %r" % (operation,))
 
 
-async def _world_op(inst, operation, command):
+async def _world_op(inst, operation, command, env):
     """Run a world-mutating op with the simulation clock running.
 
     A stepped session holds the clock while idle, so a map/restart/load
     would never finish sign-on and the op would time out. The session's
-    mode is restored afterwards when it was stepped before.
+    mode is restored afterwards when it was stepped before. The caller's
+    envelope rides the primary mutation; the internal mode flips use the
+    instance's live lease.
     """
     async with _cancel_releases(inst):
         stepped = (await _offload(_state, inst)).get("mode") == "stepped"
         if stepped:
-            await _offload(_bridge_ok, inst, "control", sub="mode",
+            await _offload(_mutate, inst, "control", sub="mode",
                            mode="realtime")
         try:
             before = (await _offload(_state, inst))["world_gen"]
-            await _offload(_bridge_ok, inst, "exec", text=command)
+            await _offload(_mutate, inst, "exec", text=command, **env)
             st = await _wait_world(inst, before)
         finally:
             if stepped:
-                await _offload(_bridge_ok, inst, "control", sub="mode",
+                await _offload(_mutate, inst, "control", sub="mode",
                                mode="stepped")
     return {"operation": operation, "world_gen": st["world_gen"],
             "frame": st["frame"], "map": st["map"], "gameplay_ready": True}
@@ -737,9 +699,9 @@ SAVE_FAILURES = (
 )
 
 
-async def _save_op(inst, slot, path):
+async def _save_op(inst, slot, path, env):
     async with _cancel_releases(inst):
-        await _offload(_bridge_ok, inst, "exec", text="save %s" % slot)
+        await _offload(_mutate, inst, "exec", text="save %s" % slot, **env)
         deadline = time.time() + SAVE_WAIT_SECS
         tail = ""
         while time.time() < deadline:
@@ -757,11 +719,16 @@ async def _save_op(inst, slot, path):
 
 @mcp.tool(annotations=RO_FALSE)
 async def quake_config(instance: str, operation: str, name: str,
-                       value: str = "") -> dict:
+                       value: str = "", action_id: str = "", lease: str = "",
+                       action_seq: int = 0, epoch: int = 0,
+                       world_generation: int = 0,
+                       control_revision: int = 0) -> dict:
     """Read or write one allowlisted engine setting (effective value).
 
     Only declared input/view/audio/access settings are reachable; unknown
     names are INVALID_CONTEXT and known-but-read-only ones POLICY_DENIED.
+    A set carries the controller-lease envelope (see quake_act); get is a
+    read.
     """
     inst = _instance(instance)
     if operation not in ("get", "set"):
@@ -783,36 +750,58 @@ async def quake_config(instance: str, operation: str, name: str,
     if len(value) > 128 or any(ord(ch) < 32 for ch in value):
         raise ValueError("INVALID_CONTEXT: bad setting value")
     async with _cancel_releases(inst):
-        res = await _offload(_bridge_ok, inst, "cvar", name=name, value=value)
+        res = await _offload(_mutate, inst, "cvar", name=name, value=value,
+                             action_id=action_id, lease=lease,
+                             action_seq=action_seq, epoch=epoch,
+                             world_generation=world_generation,
+                             control_revision=control_revision)
     return {"operation": operation, "name": name, "value": res.get("value")}
 
 
 @mcp.tool(annotations=RO_FALSE)
 async def quake_console(instance: str, command: str,
-                        args: list[str] = []) -> dict:
+                        args: list[str] = [], action_id: str = "",
+                        lease: str = "", action_seq: int = 0, epoch: int = 0,
+                        world_generation: int = 0,
+                        control_revision: int = 0) -> dict:
     """Run one allowlisted console command with validated arguments.
 
     Never accepts a raw command line; anything outside the allowlist is
-    POLICY_DENIED. The returned tail reflects the console as of the
-    reply and can predate the command's own output; poll again to see it.
+    POLICY_DENIED. Gameplay commands require a ready world (NOT_READY
+    otherwise); pause 0 resumes and is exempt. The returned tail reflects
+    the console as of the reply and can predate the command's own output;
+    poll again to see it.
     """
     inst = _instance(instance)
-    line = _console_line(command, args)
+    line, cls = _console_line(command, args)
+    if cls == "gameplay" and not (command == "pause" and list(args) == ["0"]):
+        if not gameplay_ready(await _offload(_state, inst)):
+            raise ValueError("NOT_READY: gameplay command needs a loaded "
+                             "game")
     async with _cancel_releases(inst):
-        res = await _offload(_bridge_ok, inst, "exec", text=line)
+        res = await _offload(_mutate, inst, "exec", text=line,
+                             action_id=action_id, lease=lease,
+                             action_seq=action_seq, epoch=epoch,
+                             world_generation=world_generation,
+                             control_revision=control_revision)
     return {"command": command, "args": list(args),
             "output": res.get("output", "")}
 
 
 @mcp.tool(annotations=RO_FALSE)
 async def quake_ui(instance: str, key: str = "", text: str = "",
-                   context: str = "") -> dict:
+                   context: str = "", action_id: str = "", lease: str = "",
+                   action_seq: int = 0, epoch: int = 0,
+                   world_generation: int = 0,
+                   control_revision: int = 0) -> dict:
     """Deliver UI keys or type into the active text field.
 
     key is a name (escape/enter/up/down/...) or a single character; the
     engine receives a key-down/key-up pair. text types only into a live
     console/chat field and never submits it. context (game|console|
     message|menu), when given, must match the engine's current UI state.
+    The envelope rides the press (the first key event); the matching
+    release is part of the same delivery, not a separate action.
     """
     inst = _instance(instance)
     if context:
@@ -822,6 +811,10 @@ async def quake_ui(instance: str, key: str = "", text: str = "",
                              "message|menu")
         if (await _offload(_state, inst))["ui"] != want:
             raise ValueError("NOT_READY: expected %s UI context" % context)
+    env = {"action_id": action_id, "lease": lease,
+           "action_seq": action_seq, "epoch": epoch,
+           "world_generation": world_generation,
+           "control_revision": control_revision}
     if text:
         if (await _offload(_state, inst))["ui"] not in (1, 2):
             raise ValueError("INVALID_CONTEXT: no active text field")
@@ -831,9 +824,10 @@ async def quake_ui(instance: str, key: str = "", text: str = "",
                 if not 32 <= ord(ch) <= 126:
                     raise ValueError("INVALID_CONTEXT: text must be printable "
                                      "ASCII")
-                await _offload(_bridge_ok, inst, "key", key=str(ord(ch)),
-                               down="1")
-                await _offload(_bridge_ok, inst, "key", key=str(ord(ch)),
+                await _offload(_mutate, inst, "key", key=str(ord(ch)),
+                               down="1", **env)
+                env = {}
+                await _offload(_mutate, inst, "key", key=str(ord(ch)),
                                down="0")
                 sent.append(ch)
         return {"typed": len(sent)}
@@ -846,20 +840,25 @@ async def quake_ui(instance: str, key: str = "", text: str = "",
         else:
             raise ValueError("INVALID_CONTEXT: unknown key %r" % (key,))
     async with _cancel_releases(inst):
-        await _offload(_bridge_ok, inst, "key", key=str(code), down="1")
-        await _offload(_bridge_ok, inst, "key", key=str(code), down="0")
+        await _offload(_mutate, inst, "key", key=str(code), down="1", **env)
+        await _offload(_mutate, inst, "key", key=str(code), down="0")
     return {"key": key, "code": code}
 
 
 @mcp.tool(annotations=RO_FALSE)
 async def quake_control(instance: str, operation: str = "acquire",
-                        mode: str = "") -> dict:
+                        mode: str = "", action_id: str = "", lease: str = "",
+                        action_seq: int = 0, epoch: int = 0,
+                        world_generation: int = 0,
+                        control_revision: int = 0) -> dict:
     """Acquire/release/detach the controller lease or set the execution mode.
 
     acquire refuses while physical attack/jump buttons are held
     (CONTROL_BUSY). release and detach are idempotent. mode selects
     stepped (freeze the simulation between actions, advance only by
     ticks) or realtime; stepped sessions need ticks, not duration_ms.
+    The envelope applies to mode only; acquire/release/detach are
+    lifecycle ops.
     """
     inst = _instance(instance)
     if operation in ("acquire", "release", "detach"):
@@ -868,9 +867,16 @@ async def quake_control(instance: str, operation: str = "acquire",
             # the server owns the lease while the caller holds it: beat
             # every 500 ms so tool calls longer than the 2 s expiry
             # (image encoding, world loads) do not lose control
-            inst.lease = res.get("lease", "")
+            lease_id = res.get("lease", "")
+            # a redundant acquire returns the same lease, and the bridge
+            # preserves its sequence high-water for it; rewinding here
+            # would spend a sequence the engine already consumed and the
+            # next mutation would be RESULT_EXPIRED. Only a new lease id
+            # opens a fresh fence.
+            if lease_id != inst.lease:
+                inst.next_seq = 0
+            inst.lease = lease_id
             inst.epoch = res.get("epoch", 0)
-            inst.next_seq = 0
             inst.keepalive(inst.lease, inst.epoch)
         else:
             inst.stop_keepalive()
@@ -886,8 +892,12 @@ async def quake_control(instance: str, operation: str = "acquire",
         if mode not in ("stepped", "realtime"):
             raise ValueError("INVALID_CONTEXT: mode must be stepped|realtime")
         async with _cancel_releases(inst):
-            res = await _offload(_bridge_ok, inst, "control", sub="mode",
-                                 mode=mode)
+            res = await _offload(_mutate, inst, "control", sub="mode",
+                                 mode=mode, action_id=action_id,
+                                 lease=lease, action_seq=action_seq,
+                                 epoch=epoch,
+                                 world_generation=world_generation,
+                                 control_revision=control_revision)
         return {"operation": "mode", "mode": res.get("mode", mode)}
     raise ValueError("INVALID_CONTEXT: operation must be acquire|release|"
                      "detach|mode")

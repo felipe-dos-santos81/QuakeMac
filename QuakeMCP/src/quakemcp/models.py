@@ -1,8 +1,10 @@
-"""QuakeMCP shared types: error codes, leases, observations.
+"""QuakeMCP shared types and policy: error codes, leases, observations,
+the capability manifest and the console/config allowlists.
 
 Pure validation only — no engine I/O, no sockets. The C bridge mirrors
 the wire semantics; this module is what the Python server enforces.
 """
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from typing import NotRequired, TypedDict
@@ -143,6 +145,143 @@ KNOWN_OPS = frozenset({
 })
 
 MAX_LINE_BYTES = 65536
+
+
+# ---- console / config policy (moved from server.py, Task 4) -----------------
+#
+# Raw console scripting stays disabled: quake_console takes a registered
+# command plus validated argument tokens, never a free-form string. Each
+# entry declares its arity, validator and class once; a validator is a
+# pure function raising ValueError with the frozen error code. Gameplay
+# commands require a ready world (except pause 0, which resumes one).
+
+_MAP_RE = re.compile(r"^[A-Za-z0-9_*-]{1,64}$")
+_SLOT_RE = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
+_GIVE_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
+
+
+def _validate_skill(value):
+    if value not in ("0", "1", "2", "3"):
+        raise ValueError("INVALID_CONTEXT: skill must be 0..3")
+    return value
+
+
+def _validate_impulse(value):
+    if not value.isdigit() or not 0 <= int(value) <= 255:
+        raise ValueError("INVALID_CONTEXT: impulse must be 0..255")
+    return value
+
+
+def _validate_pause(value):
+    if value not in ("0", "1"):
+        raise ValueError("INVALID_CONTEXT: pause must be 0 or 1")
+    return value
+
+
+def _validate_give(value):
+    if not _GIVE_RE.match(value):
+        raise ValueError("POLICY_DENIED: bad give item %r" % (value,))
+    return value
+
+
+def validate_map_id(value):
+    if not _MAP_RE.match(value) or ".." in value:
+        raise ValueError("POLICY_DENIED: bad map id %r" % (value,))
+    return value
+
+
+def validate_save_slot(value):
+    if not _SLOT_RE.match(value):
+        raise ValueError("POLICY_DENIED: bad save slot %r" % (value,))
+    return value
+
+
+# command -> (arg count, validator or None, class)
+CONSOLE_COMMANDS = {
+    "status": (0, None, "client"),
+    "version": (0, None, "client"),
+    "skill": (1, _validate_skill, "gameplay"),
+    "god": (0, None, "gameplay"),
+    "noclip": (0, None, "gameplay"),
+    "give": (1, _validate_give, "gameplay"),
+    "impulse": (1, _validate_impulse, "gameplay"),
+    "kill": (0, None, "gameplay"),
+    "pause": (1, _validate_pause, "gameplay"),
+    "map": (1, validate_map_id, "client"),
+    "restart": (0, None, "client"),
+    "changelevel": (1, validate_map_id, "client"),
+    "quit": (0, None, "client"),
+    "screenshot": (0, None, "client"),
+    "toggleconsole": (0, None, "client"),
+}
+
+# Curated settings from the engine's real cvar set: input, view, audio,
+# and the accessibility knobs. `access_*` names are readable but only the
+# allowlisted ones writable (several hold command strings).
+CONFIG_CVARS = frozenset({
+    "sensitivity", "m_pitch", "m_yaw", "m_forward", "m_side", "m_filter",
+    "lookspring", "lookstrafe", "in_mouse", "in_dgamouse",
+    "cl_forwardspeed", "cl_backspeed", "cl_sidespeed", "cl_upspeed",
+    "cl_movespeedkey", "cl_yawspeed", "cl_pitchspeed", "cl_anglespeedkey",
+    "cl_autofire", "cl_bob", "cl_bobcycle", "cl_bobup", "cl_rollangle",
+    "cl_rollspeed", "cl_pitchdriftspeed",
+    "scr_viewsize", "scr_fov", "scr_conspeed", "scr_centertime",
+    "scr_showpause", "scr_showram", "scr_showturtle", "crosshair",
+    "gl_triplebuffer", "gl_picmip", "gl_ztrick", "gl_finish", "gl_clear",
+    "gl_subdivide_size", "gl_max_size", "gl_affinemodels", "gl_smoothmodels",
+    "gl_polyblend", "gl_flashblend",
+    "host_maxfps", "host_timescale", "v_gamma", "vid_mode",
+    "volume", "bgmvolume", "_snd_mixahead", "bgmbuffer", "loadas8bit",
+    "ambient_level", "ambient_fade", "snd_noextraupdate",
+})
+CONFIG_ACCESS_PREFIX = "access_"
+CONFIG_ACCESS_WRITE = frozenset({"access_mouseonly"})
+
+KEY_CODES = {
+    "escape": 27, "enter": 13, "space": 32, "tab": 9, "backspace": 127,
+    "up": 128, "down": 129, "left": 130, "right": 131,
+    "ins": 147, "del": 148, "pgdn": 149, "pgup": 150, "home": 151,
+    "end": 152, "pause": 255,
+}
+KEY_CODES.update({"f%d" % n: 134 + n for n in range(1, 13)})
+
+UI_CONTEXTS = {"game": 0, "console": 1, "message": 2, "menu": 3}
+
+# Static capability manifest: what this server and bridge actually
+# support. `tools` mirrors the registered tool surface; keep it in step
+# with server.py. `respawn` is deliberately absent: its semantics are
+# unverified (UNSUPPORTED_CAPABILITY).
+CAPABILITIES = {
+    "tools": [
+        "quake_act", "quake_attach", "quake_config", "quake_console",
+        "quake_control", "quake_game", "quake_observe", "quake_release",
+        "quake_start", "quake_state", "quake_status", "quake_stop",
+        "quake_ui"],
+    "actions": {"axes": ["forward", "strafe", "vertical"],
+                "run": True, "attack": True, "jump": ["none", "tap", "hold"],
+                "weapons": list(range(1, 9))},
+    "ui": {"contexts": ["game", "console", "message", "menu"]},
+    "settings": sorted(CONFIG_CVARS),
+    "frames": {"formats": ["png", "jpeg"], "longest_edge": 1280,
+               "crop": True},
+    "modes": ["stepped", "realtime"],
+    "telemetry": ["hud", "pixels_only"],
+    "console": sorted(CONSOLE_COMMANDS),
+    "game": ["new_game", "restart", "load_map", "save", "load",
+             "list_maps", "list_saves"],
+}
+
+
+def gameplay_ready(state):
+    """A loaded local world that is past sign-on and accepting input.
+
+    Mirrors the bridge's act gate minus the engine's paused flag and
+    health check: those live in MCP_GameplayReady (q_mcp.c). The fork
+    dumps its first two movement messages, so movemessages > 2.
+    """
+    return bool(state.get("map")) and state.get("signon") == 4 \
+        and state.get("movemessages", 0) > 2 \
+        and not state.get("dead") and not state.get("intermission")
 
 
 class QuakeMCPError(Exception):

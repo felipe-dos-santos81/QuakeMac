@@ -35,11 +35,19 @@ async def _run():
         r = await s.call_tool("quake_start", {"profile": "local",
                                               "port": PORT})
         assert not r.isError, _text(r)
-        inst = json.loads(_text(r))["instance"]
+        start = json.loads(_text(r))
+        assert start["mode"] == "stepped", start
+        inst = start["instance"]
         try:
             r = await s.call_tool("quake_status", {"instance": inst})
             assert not r.isError, _text(r)
             assert json.loads(_text(r))["bridge_ready"] is True
+
+            # an owned session starts frozen: the start result and the
+            # engine's own state agree on the execution mode
+            r = await s.call_tool("quake_state", {"instance": inst})
+            assert not r.isError, _text(r)
+            assert json.loads(_text(r))["mode"] == "stepped"
 
             r = await s.call_tool("quake_game", {"instance": inst,
                                                  "operation": "new_game"})

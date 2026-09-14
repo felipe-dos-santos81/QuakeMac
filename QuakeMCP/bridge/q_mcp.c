@@ -1347,6 +1347,23 @@ static qboolean MCP_CheckSequence (char *line, char *id, int *seq)
 
 /*
 ==================
+MCP_GameplayReady
+
+The act gate: a local world must be loaded, past sign-on, past the
+fork's two dropped movement messages, alive and unpaused. The design's
+playback-facing gate; the death flow's respawn action relaxes it
+explicitly (Task 7).
+==================
+*/
+static qboolean MCP_GameplayReady (void)
+{
+	return sv.active && cls.signon == 4 && cl.movemessages > 2
+		&& cl.stats[STAT_HEALTH] > 0 && !cl.intermission
+		&& !sv.paused;
+}
+
+/*
+==================
 MCP_HandleLine
 
 exec: Cbuf_AddText (newline appended if missing); oversize 4 KiB
@@ -1688,7 +1705,7 @@ static void MCP_HandleLine (char *line)
 		char tickss[32], durs[32];
 		char jumps[16];
 		int ticks, dur;
-		int has_ticks, has_dur, jump, impulse, run, attack;
+		int has_ticks, has_dur, jump, impulse, run, attack, respawn;
 		float fwd, strafe, vert, yaw, pitch;
 
 		// parse every argument before deciding anything: duplicate
@@ -1720,6 +1737,7 @@ static void MCP_HandleLine (char *line)
 		run = MCP_FieldInt (line, "run") != 0;
 		attack = MCP_FieldInt (line, "attack") != 0;
 		impulse = MCP_FieldInt (line, "impulse");
+		respawn = MCP_FieldInt (line, "respawn") != 0;
 		jump = 0;
 		if (MCP_Field (line, "jump", jumps, sizeof (jumps)))
 		{
@@ -1779,6 +1797,15 @@ static void MCP_HandleLine (char *line)
 			}
 			mcp_act_mode = MCP_ACT_DURATION;
 			mcp_act_duration = dur / 1000.0;
+		}
+
+		// gameplay actions need a live world; the respawn action is
+		// the one deliberate exception (the player is dead by design)
+		if (!respawn && !MCP_GameplayReady ())
+		{
+			MCP_Reply (id, false, "NOT_READY",
+				"no ready local game");
+			return;
 		}
 
 		MCP_BeginInput (fwd, strafe, vert, yaw, pitch, attack,
