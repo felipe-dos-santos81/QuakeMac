@@ -7,3 +7,6 @@ graphify-out/
 tools/extracted/
 .superpowers/
 .worktrees/
+__pycache__/
+*.pyc
+.pytest_cache/

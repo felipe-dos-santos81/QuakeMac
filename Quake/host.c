@@ -22,6 +22,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "r_local.h"
 #include "cl_access.h"
+#ifdef QUAKE_MCP
+#include "q_mcp.h"
+#else
+// no bridge in this build: the stepped-mode guards below vanish
+#define MCP_FreezeSim() 0
+#endif
 
 /*
 
@@ -236,7 +242,6 @@ void Host_InitLocal (void)
 	Cvar_RegisterVariable (&temp1);
 
 	Host_FindMaxClients ();
-	
 	host_time = 1.0;		// so a think at time 0 won't get called
 }
 
@@ -653,7 +658,11 @@ void _Host_Frame (float time)
 
 // keep the random time dependent
 	rand ();
-	
+
+#ifdef QUAKE_MCP
+	MCP_Poll ();
+#endif
+
 // decide the simulation time
 	if (!Host_FilterTime (time))
 		return;			// don't run too fast, or packets will flood out
@@ -677,7 +686,11 @@ void _Host_Frame (float time)
 	NET_Poll();
 
 // if running the server locally, make intentions now
-	if (sv.active)
+// (stepped mode holds the simulation while no action runs; the guard
+// is 0 in vanilla builds, so this stays the original branch. Idle
+// frames are not repaid as catch-up: Host_FilterTime keeps the frame
+// clock fresh on every pass.)
+	if (sv.active && !MCP_FreezeSim ())
 		CL_SendCmd ();
 	
 //-------------------
@@ -689,8 +702,14 @@ void _Host_Frame (float time)
 // check for commands typed to the host
 	Host_GetConsoleCommands ();
 	
-	if (sv.active)
+	if (sv.active && !MCP_FreezeSim ())
+	{
 		Host_ServerFrame ();
+#ifdef QUAKE_MCP
+	// one completed simulation step (local server + client in lockstep)
+		MCP_NoteTick ();
+#endif
+	}
 
 //-------------------
 //
@@ -700,10 +719,17 @@ void _Host_Frame (float time)
 
 // if running the server remotely, send intentions now after
 // the incoming messages have been read
-	if (!sv.active)
+	if (!sv.active && !MCP_FreezeSim ())
+	{
 		CL_SendCmd ();
+#ifdef QUAKE_MCP
+	// remote session: sending the move is this frame's step
+		MCP_NoteTick ();
+#endif
+	}
 
-	host_time += host_frametime;
+	if (!MCP_FreezeSim ())
+		host_time += host_frametime;
 
 // fetch results from server
 	if (cls.state == ca_connected)
@@ -917,6 +943,10 @@ void Host_Init (quakeparms_t *parms)
 	Hunk_AllocName (0, "-HOST_HUNKLEVEL-");
 	host_hunklevel = Hunk_LowMark ();
 
+#ifdef QUAKE_MCP
+	MCP_Init ();
+#endif
+
 	host_initialized = true;
 	
 	Sys_Printf ("========Quake Initialized=========\n");	
@@ -951,6 +981,9 @@ void Host_Shutdown(void)
 	NET_Shutdown ();
 	S_Shutdown();
 	IN_Shutdown ();
+#ifdef QUAKE_MCP
+	MCP_Shutdown ();
+#endif
 
 	if (cls.state != ca_dedicated)
 	{

@@ -22,6 +22,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "cl_access.h"
 
+#ifdef QUAKE_MCP
+#include "q_mcp.h"
+#endif
+
 // we need to declare some mouse variables here, because the menu system
 // references them even when on a unix system.
 
@@ -685,6 +689,9 @@ void CL_SendCmd (void)
 	// allow mice or other external controllers to add to the move
 		IN_Move (&cmd);
 	
+#ifdef QUAKE_MCP
+		MCP_Move (&cmd);
+#endif
 	// send the unreliable message
 		CL_SendMove (&cmd);
 	
