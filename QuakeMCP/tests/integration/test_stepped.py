@@ -106,13 +106,34 @@ def test_stepped_mode():
                 assert reply["ok"] is True, reply
                 return reply["result"]
 
+            # every mutation runs under the controller lease; this raw
+            # socket has no server-side keepalive, so the lease must be
+            # beaten while a world loads
+            reply = op(id="a0", op="control", sub="acquire")
+            assert reply["ok"] is True, reply
+            lease = reply["result"]["lease"]
+            epoch = reply["result"]["epoch"]
+            seq = [0]
+
+            def next_seq():
+                seq[0] += 1
+                return str(seq[0])
+
+            def beat():
+                reply = op(id="hb", op="hb", lease=lease, epoch=str(epoch))
+                assert reply["ok"] is True, reply
+
+            def mutate(**kw):
+                return op(lease=lease, epoch=str(epoch), seq=next_seq(), **kw)
+
             # a loaded world first: stepped mode opts out of the normal
             # clock afterwards, and world loads need the clock
-            op(id="s0", op="exec", text="access_mouseonly 0")
-            op(id="s1", op="exec", text="map start")
+            mutate(id="s0", op="exec", text="access_mouseonly 0")
+            mutate(id="s1", op="exec", text="map start")
             deadline = time.time() + 30
             while time.time() < deadline:
-                reply = op(id="w", op="exec", text="status")
+                beat()
+                reply = mutate(id="w", op="exec", text="status")
                 assert reply["ok"] is True, reply
                 if "players" in reply["result"]["output"]:
                     break
@@ -120,17 +141,12 @@ def test_stepped_mode():
             else:
                 pytest.fail("map never reached gameplay-ready")
 
-            # a beat must name the live lease
+            # a beat must name the live lease, never a stale id
             reply = op(id="hb0", op="hb", lease="l0-0", epoch="0")
             assert reply["ok"] is False, reply
             assert reply["error"] == "STALE_STATE", reply
 
-            reply = op(id="a1", op="control", sub="acquire")
-            assert reply["ok"] is True, reply
-            lease = reply["result"]["lease"]
-            epoch = reply["result"]["epoch"]
-
-            reply = op(id="m1", op="control", sub="mode", mode="stepped")
+            reply = mutate(id="m1", op="control", sub="mode", mode="stepped")
             assert reply["ok"] is True, reply
             assert reply["result"]["mode"] == "stepped", reply
 
@@ -145,7 +161,7 @@ def test_stepped_mode():
 
             # fixed-step act: exactly ten simulation steps, and the
             # freeze never pays back the idle wall time as catch-up
-            reply = _act(op, lease, epoch, 1, 10, action_id="a1")
+            reply = _act(op, lease, epoch, next_seq(), 10, action_id="a1")
             assert reply["ok"] is True, reply
             assert reply["result"]["completed_ticks"] == 10, reply
             assert reply["result"]["interrupted"] is False, reply
@@ -160,14 +176,14 @@ def test_stepped_mode():
 
             # repeat of the same (lease, action_id, arguments) returns
             # the recorded receipt and advances nothing
-            reply = _act(op, lease, epoch, 1, 10, action_id="a1")
+            reply = _act(op, lease, epoch, next_seq(), 10, action_id="a1")
             assert reply["ok"] is True, reply
             assert reply["result"]["completed_ticks"] == 10, reply
             d = state()
             assert d["frame"] == c["frame"], (c, d)
 
             # same id with different arguments is a conflict
-            reply = _act(op, lease, epoch, 1, 12, action_id="a1")
+            reply = _act(op, lease, epoch, next_seq(), 12, action_id="a1")
             assert reply["ok"] is False, reply
             assert reply["error"] == "POLICY_DENIED", reply
 
@@ -175,20 +191,20 @@ def test_stepped_mode():
                         epoch=str(epoch))
             assert reply["ok"] is True, reply
             # stale world generation is refused before execution
-            reply = _act(op, lease, epoch, 2, 4, action_id="a2",
+            reply = _act(op, lease, epoch, next_seq(), 4, action_id="a2",
                          world_generation=str(a["world_gen"] + 999))
             assert reply["ok"] is False, reply
             assert reply["error"] == "STALE_STATE", reply
 
             # stepped mode counts steps; a wall-clock budget would
             # silently degrade into real-time stepping
-            reply = _act(op, lease, epoch, 3, 0, action_id="a3",
+            reply = _act(op, lease, epoch, next_seq(), 0, action_id="a3",
                          duration_ms="100")
             assert reply["ok"] is False, reply
             assert reply["error"] == "UNSUPPORTED_CAPABILITY", reply
 
             # back to realtime: the clock runs again
-            reply = op(id="m2", op="control", sub="mode", mode="realtime")
+            reply = mutate(id="m2", op="control", sub="mode", mode="realtime")
             assert reply["ok"] is True, reply
             assert reply["result"]["mode"] == "realtime", reply
             reply = op(id="hb", op="hb", lease=lease,
@@ -254,8 +270,10 @@ def test_stepped_tools():
                 r = await s.call_tool("quake_state", {"instance": inst})
                 a = json.loads(text(r))
 
+                # action_seq stays unset: the server assigns the next
+                # sequence after the earlier mutations
                 act = {"instance": inst, "ticks": 8, "action_id": "tool1",
-                       "lease": lease, "epoch": epoch, "action_seq": 1}
+                       "lease": lease, "epoch": epoch}
                 r = await s.call_tool("quake_act", dict(act))
                 assert not r.isError, text(r)
                 assert r.structuredContent["completed_ticks"] == 8
@@ -277,15 +295,14 @@ def test_stepped_tools():
                 # stale world generation is refused before execution
                 r = await s.call_tool("quake_act", {
                     "instance": inst, "ticks": 4, "action_id": "tool2",
-                    "lease": lease, "epoch": epoch, "action_seq": 2,
+                    "lease": lease, "epoch": epoch,
                     "world_generation": a["world_gen"] + 999})
                 assert r.isError and "STALE_STATE" in text(r), text(r)
 
                 # stepped sessions count steps, not wall time
                 r = await s.call_tool("quake_act", {
                     "instance": inst, "duration_ms": 100,
-                    "action_id": "tool3", "lease": lease, "epoch": epoch,
-                    "action_seq": 3})
+                    "action_id": "tool3", "lease": lease, "epoch": epoch})
                 assert r.isError and "UNSUPPORTED_CAPABILITY" in text(r), \
                     text(r)
 

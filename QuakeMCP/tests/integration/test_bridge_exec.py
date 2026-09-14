@@ -1,4 +1,5 @@
-"""Task 3: exec/cvar ops with console tail. Skips without game data."""
+"""Task 3: exec/cvar mutations under the lease envelope. Skips without
+game data."""
 import glob
 import json
 import os
@@ -39,12 +40,15 @@ def test_bridge_exec():
     if not os.path.exists(EXE):
         pytest.skip("binary missing: %s" % EXE)
 
+    before = set(glob.glob(os.path.join(TOKEN_DIR, "quakemcp-*.token")))
+    # -nosound: CoreAudio device open stalls S_Init on this host; the
+    # bridge does not touch the sound system
     child = subprocess.Popen(
-        [EXE, "-basedir", os.path.join(REPO, "game"),
+        [EXE, "-nosound", "-basedir", os.path.join(REPO, "game"),
          "-mcp_port", str(PORT), "+mcp_enabled", "1"],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         cwd=REPO)
-    before = set(glob.glob(os.path.join(TOKEN_DIR, "quakemcp-*.token")))
     token = None
     token_path = None
     try:
@@ -82,16 +86,35 @@ def test_bridge_exec():
                 kw.setdefault("auth", token)
                 return send_recv(f, kw)
 
+            # every mutation carries the lease envelope; this raw client
+            # has no server-side keepalive, so it beats between calls
+            acquired = op(id="a0", op="control", sub="acquire")
+            assert acquired["ok"] is True, acquired
+            lease = acquired["result"]["lease"]
+            epoch = acquired["result"]["epoch"]
+            seq = [0]
+
+            def beat():
+                reply = op(id="hb", op="hb", lease=lease, epoch=str(epoch))
+                assert reply["ok"] is True, reply
+
+            def mutate(**kw):
+                seq[0] += 1
+                return op(lease=lease, epoch=str(epoch), seq=str(seq[0]),
+                          **kw)
+
             # exec runs on the next _Host_Frame via Cbuf_Execute, so the
             # first reply predates execution: poll until output lands.
             # NOTE: brief says exec "help" shows tail "commands:" — wrong:
             # help opens the help MENU (M_Menu_Help_f, menu.c) and prints
             # nothing. "version" (Host_Version_f) prints "Version x.xx".
-            op(id="e1", op="exec", text="version")
+            beat()
+            mutate(id="e1", op="exec", text="version")
             tail = ""
             deadline = time.time() + 15
             while time.time() < deadline:
-                reply = op(id="e2", op="exec", text="echo POLL_MARKER")
+                beat()
+                reply = mutate(id="e2", op="exec", text="echo POLL_MARKER")
                 assert reply["ok"] is True, reply
                 tail = reply["result"]["output"]
                 if "Version" in tail:
@@ -104,14 +127,14 @@ def test_bridge_exec():
             assert reply["result"] == {"value": "72"}, reply
 
             try:
-                reply = op(id="c2", op="cvar", name="host_maxfps",
-                           value="80")
+                reply = mutate(id="c2", op="cvar", name="host_maxfps",
+                               value="80")
                 assert reply["ok"] is True, reply
                 assert reply["result"] == {"value": "80"}, reply
                 reply = op(id="c3", op="cvar", name="host_maxfps")
                 assert reply["result"] == {"value": "80"}, reply
             finally:
-                op(id="c4", op="cvar", name="host_maxfps", value="72")
+                mutate(id="c4", op="cvar", name="host_maxfps", value="72")
             reply = op(id="c5", op="cvar", name="host_maxfps")
             assert reply["result"] == {"value": "72"}, reply
 

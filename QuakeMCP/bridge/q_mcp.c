@@ -37,6 +37,7 @@ of the License, or (at your option) any later version.
 #define MCP_REPLY_MAX	16384
 #define MCP_LEASE_TIMEOUT	2.0
 #define MCP_ACT_CAP	5.0
+#define MCP_SLOTS	2
 
 extern char	*con_text;
 extern int	con_totallines;
@@ -48,12 +49,23 @@ extern kbutton_t	in_attack, in_jump;
 cvar_t	mcp_enabled = {"mcp_enabled", "0"};
 cvar_t	mcp_port = {"mcp_port", "28900"};
 
+typedef struct
+{
+	int	fd;
+	char	line[MCP_LINE_MAX + 1];
+	int	len;
+} mcp_slot_t;
+
 static int	mcp_listen_fd = -1;
-static int	mcp_client_fd = -1;
+static mcp_slot_t mcp_slots[MCP_SLOTS] = {
+	{ -1, { 0 }, 0 },
+	{ -1, { 0 }, 0 },
+};
+static int	mcp_reply_fd = -1;	// target of the next MCP_Reply
+static int	mcp_act_fd = -1;	// connection owning a deferred act
+static int	mcp_observe_fd = -1;	// connection owning a deferred observe
 static char	mcp_token[2 * MCP_TOKEN_BYTES + 1];
 static char	mcp_token_path[256];
-static char	mcp_line[MCP_LINE_MAX + 1];
-static int	mcp_line_len = 0;
 static int	mcp_oversize_drops = 0;
 static double	mcp_retry_at = 0;
 
@@ -78,9 +90,8 @@ static double	mcp_act_start;		// wall clock at act start
 static double	mcp_act_duration;	// seconds requested (MCP_ACT_DURATION)
 static char	mcp_act_id[128];
 static char	mcp_act_aid[128];	// action_id echo
-static char	mcp_act_lease[64];	// lease the action was admitted on
+static int	mcp_act_impulse;	// requested weapon impulse
 static unsigned	mcp_act_hash;		// argument hash for the receipt ring
-static int	mcp_act_epoch;
 
 // Stepped mode (Task 9): when set, _Host_Frame skips the client and
 // server simulation steps while no action runs, so an idle owned session
@@ -95,17 +106,19 @@ static int	mcp_step_mode;
 static unsigned	mcp_sim_frame;
 
 // Receipt ring (Task 9), bounded so the module never grows. A repeated
-// (lease, action_id, epoch) with the same argument hash returns its
+// (op, lease, action_id, epoch) with the same argument hash returns its
 // recorded receipt; a different hash is refused. With 64 slots, a client
 // that echoes action ids across a long session can still outrun it: the
 // miss then surfaces as RESULT_EXPIRED via the sequence high-water.
 #define MCP_LEDGER_SIZE 64
 typedef struct
 {
+	char		op[16];
 	char		lease[64];
 	char		action_id[128];
 	int		epoch;
 	unsigned	hash;
+	char		state[16];	// "done" | "pending" | "denied"
 	char		result[MCP_REPLY_MAX];
 } mcp_ledger_t;
 
@@ -119,6 +132,26 @@ static int	mcp_world_gen;
 // Deferred observation reply (Task 7): observe arms MCAP_* and the reply
 // is sent from MCP_Poll once the frame is captured.
 static char	mcp_observe_id[128];
+
+// Modal interception (Task 6): a key op that opens SCR_ModalMessage gets
+// an immediate needs_input reply instead of blocking the caller. The
+// dialog loop pumps MCP_Poll, so the answer arrives as an ordinary key
+// op and release/expiry injects escape. mcp_modal_fd/id stay set after
+// the dialog closes: the key op on the stack uses them to recognize that
+// its modal already replied and skip its own reply.
+static int	mcp_in_key;		// set around Key_Event in the key op
+static int	mcp_modal_open;		// a modal entered from an MCP key op waits
+static int	mcp_modal_fd;		// connection that got the needs_input reply
+static char	mcp_modal_id[128];	// request id that got it
+static char	mcp_modal_aid[128];	// action_id of that request (receipt key)
+static int	mcp_modal_ledger;	// pending receipt slot, -1 when none
+static int	mcp_modal_replied;	// needs_input sent for the pending modal
+static char	mcp_key_id[128];	// triggering op, saved while mcp_in_key
+static char	mcp_key_aid[128];
+static unsigned	mcp_key_hash;
+
+// the slot layer finishes a deferred act when its connection goes away
+static void MCP_FinishAct (qboolean interrupted);
 
 
 /*
@@ -189,8 +222,9 @@ static qboolean MCP_WriteToken (void)
 ==================
 MCP_Setup
 
-Bind loopback, single client, non-blocking. Port from -mcp_port CLI
-first, mcp_port cvar second. Idempotent: safe to call every poll.
+Bind loopback, non-blocking, room for both connection slots. Port from
+-mcp_port CLI first, mcp_port cvar second. Idempotent: safe to call
+every poll.
 ==================
 */
 static void MCP_Setup (void)
@@ -236,7 +270,7 @@ static void MCP_Setup (void)
 	setsockopt (fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof (one));
 	if (bind (fd, (struct sockaddr *)&addr, sizeof (addr)) < 0)
 		goto fail;
-	if (listen (fd, 1) < 0)
+	if (listen (fd, MCP_SLOTS) < 0)
 		goto fail;
 
 	mcp_listen_fd = fd;
@@ -254,15 +288,135 @@ fail:
 
 /*
 ==================
-MCP_CloseClient
+MCP_SlotForFd
+
+Find the slot owning fd, or -1.
 ==================
 */
-static void MCP_CloseClient (void)
+static int MCP_SlotForFd (int fd)
 {
-	if (mcp_client_fd >= 0)
-		close (mcp_client_fd);
-	mcp_client_fd = -1;
-	mcp_line_len = 0;
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+		if (mcp_slots[i].fd == fd)
+			return i;
+	return -1;
+}
+
+/*
+==================
+MCP_FreeSlot
+
+First slot without a connection, or -1 when both are occupied.
+==================
+*/
+static int MCP_FreeSlot (void)
+{
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+		if (mcp_slots[i].fd < 0)
+			return i;
+	return -1;
+}
+
+/*
+==================
+MCP_CloseSlot
+
+Close one connection and forget it. When the slot owned a deferred act
+the act is finished (the reply to the dead fd is a no-op) and when it
+owned a deferred observe the capture is dropped: neither may outlive
+the connection that asked for it.
+==================
+*/
+static void MCP_CloseSlot (int i)
+{
+	mcp_slot_t *s;
+	int fd, ownsact, ownsobs;
+
+	s = &mcp_slots[i];
+	fd = s->fd;
+	if (fd < 0)
+		return;
+	s->fd = -1;
+	s->len = 0;
+	ownsact = (mcp_act_fd == fd);
+	ownsobs = (mcp_observe_fd == fd);
+	if (mcp_reply_fd == fd)
+		mcp_reply_fd = -1;
+	close (fd);
+	if (ownsact)
+		MCP_FinishAct (true);
+	if (ownsobs)
+	{
+		mcp_observe_fd = -1;
+		MCAP_Cancel ();
+	}
+}
+
+/*
+==================
+MCP_CloseAll
+
+Drop every connection, for shutdown.
+==================
+*/
+static void MCP_CloseAll (void)
+{
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+		MCP_CloseSlot (i);
+	mcp_reply_fd = -1;
+}
+
+/*
+==================
+MCP_CloseFd
+
+Close the slot that owns fd; other connections are untouched. The send
+error paths use this so only the failed target is dropped.
+==================
+*/
+static void MCP_CloseFd (int fd)
+{
+	int i;
+
+	i = MCP_SlotForFd (fd);
+	if (i >= 0)
+		MCP_CloseSlot (i);
+}
+
+/*
+==================
+MCP_ReapEofSlot
+
+Close a slot whose peer is at EOF (or in error) and return its index.
+The MSG_PEEK probe leaves any pending bytes untouched. Returns -1 when
+every occupied slot still has a live peer.
+==================
+*/
+static int MCP_ReapEofSlot (void)
+{
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+	{
+		char probe;
+		int pn;
+
+		if (mcp_slots[i].fd < 0)
+			continue;
+		pn = recv (mcp_slots[i].fd, &probe, 1, MSG_PEEK);
+		if (pn == 0 || (pn < 0 && errno != EAGAIN
+			&& errno != EWOULDBLOCK && errno != EINTR))
+		{
+			MCP_CloseSlot (i);
+			return i;
+		}
+	}
+	return -1;
 }
 
 /*
@@ -376,6 +530,28 @@ static int MCP_Field (char *line, char *name, char *out, int outsize)
 
 /*
 ==================
+MCP_FieldRawInt
+
+Read an unquoted numeric top-level field (the wire's "v").
+==================
+*/
+static int MCP_FieldRawInt (char *line, char *name)
+{
+	char	pat[32];
+	char	*p;
+
+	snprintf (pat, sizeof (pat), "\"%s\":", name);
+	p = strstr (line, pat);
+	if (!p)
+		return -1;
+	p += strlen (pat);
+	while (*p == ' ' || *p == '\t')
+		p++;
+	return atoi (p);
+}
+
+/*
+==================
 MCP_Escape
 
 JSON-escape src into dst (quotes, backslash, control chars).
@@ -468,15 +644,17 @@ static void MCP_Send (char *msg)
 {
 	int left, n;
 
+	if (mcp_reply_fd < 0)
+		return;
 	left = strlen (msg);
-	while (left > 0 && mcp_client_fd >= 0)
+	while (left > 0 && mcp_reply_fd >= 0)
 	{
-		n = send (mcp_client_fd, msg + strlen (msg) - left, left, 0);
+		n = send (mcp_reply_fd, msg + strlen (msg) - left, left, 0);
 		if (n <= 0)
 		{
 			if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
 				continue;
-			MCP_CloseClient ();
+			MCP_CloseFd (mcp_reply_fd);
 			return;
 		}
 		left -= n;
@@ -516,6 +694,23 @@ static void MCP_Reply (char *id, qboolean ok, char *error, char *result)
 			"{\"v\":1,\"id\":\"%s\",\"ok\":false,\"error\":\"%s\",\"detail\":\"%s\"}\n",
 			idbuf, error, result);
 	MCP_Send (out);
+}
+
+/*
+==================
+MCP_FormatTail
+
+Write the escaped console tail as a result body (no outer braces):
+shared by the tail op, the read half of exec and the exec receipt.
+==================
+*/
+static void MCP_FormatTail (char *out, int outsize)
+{
+	char tail[8192], esctail[8192 * 2];
+
+	MCP_ConsoleTail (tail, sizeof (tail));
+	MCP_Escape (esctail, sizeof (esctail), tail);
+	snprintf (out, outsize, "\"output\":\"%s\"", esctail);
 }
 
 /*
@@ -610,11 +805,13 @@ static qboolean MCP_SendBlob (byte *data, int len)
 	fd_set	w;
 	struct timeval tv;
 
+	if (mcp_reply_fd < 0)
+		return false;
 	stop = Sys_DoubleTime () + 0.1;
 	sent = 0;
-	while (sent < len && mcp_client_fd >= 0)
+	while (sent < len && mcp_reply_fd >= 0)
 	{
-		n = send (mcp_client_fd, data + sent, len - sent, 0);
+		n = send (mcp_reply_fd, data + sent, len - sent, 0);
 		if (n > 0)
 		{
 			sent += n;
@@ -624,22 +821,22 @@ static qboolean MCP_SendBlob (byte *data, int len)
 		{
 			if (Sys_DoubleTime () > stop)
 			{
-				MCP_CloseClient ();
+				MCP_CloseFd (mcp_reply_fd);
 				return false;
 			}
 			FD_ZERO (&w);
-			FD_SET (mcp_client_fd, &w);
+			FD_SET (mcp_reply_fd, &w);
 			tv.tv_sec = 0;
 			tv.tv_usec = 20000;
-			select (mcp_client_fd + 1, NULL, &w, NULL, &tv);
+			select (mcp_reply_fd + 1, NULL, &w, NULL, &tv);
 			continue;
 		}
 		if (n < 0 && errno == EINTR)
 			continue;
-		MCP_CloseClient ();
+		MCP_CloseFd (mcp_reply_fd);
 		return false;
 	}
-	return mcp_client_fd >= 0;
+	return mcp_reply_fd >= 0;
 }
 
 /*
@@ -653,14 +850,20 @@ metadata + blob_bytes) followed by the framed RGB blob.
 static void MCP_SendObservation (mcap_snapshot_t *snap)
 {
 	char	result[MCP_REPLY_MAX];
-	int	n, bytes;
+	int	n, bytes, savedfd;
 
+	// the deferred reply targets the connection that asked for the
+	// capture; the caller's own reply target is restored
+	savedfd = mcp_reply_fd;
+	mcp_reply_fd = mcp_observe_fd;
+	mcp_observe_fd = -1;
 	n = MCP_FormatState (result, sizeof (result));
 	if (n < 0)
 	{
 		MCP_Reply (mcp_observe_id, false, "INVALID_CONTEXT",
 			"state snapshot overflow");
 		MCAP_Release ();
+		mcp_reply_fd = savedfd;
 		return;
 	}
 	bytes = snap->w * snap->h * 3;
@@ -679,6 +882,159 @@ static void MCP_SendObservation (mcap_snapshot_t *snap)
 	MCP_Reply (mcp_observe_id, true, NULL, result);
 	MCP_SendBlob (snap->data, bytes);
 	MCAP_Release ();
+	mcp_reply_fd = savedfd;
+}
+
+/*
+==================
+MCP_RecordReceipt
+
+Write the next ring entry, bound to the lease and epoch live at call
+time. An empty action id has no identity and is never recorded. Returns
+the ring slot written, or -1 when nothing was recorded.
+==================
+*/
+static int MCP_RecordReceipt (char *op, char *aid, unsigned hash,
+	char *state, char *result)
+{
+	mcp_ledger_t *e;
+	int idx;
+
+	if (!aid[0])
+		return -1;
+	idx = mcp_ledger_next;
+	e = &mcp_ledger[idx];
+	mcp_ledger_next = (mcp_ledger_next + 1) % MCP_LEDGER_SIZE;
+	strncpy (e->op, op, sizeof (e->op) - 1);
+	e->op[sizeof (e->op) - 1] = 0;
+	strncpy (e->lease, mcp_lease_id, sizeof (e->lease) - 1);
+	e->lease[sizeof (e->lease) - 1] = 0;
+	strncpy (e->action_id, aid, sizeof (e->action_id) - 1);
+	e->action_id[sizeof (e->action_id) - 1] = 0;
+	e->epoch = mcp_epoch;
+	e->hash = hash;
+	strncpy (e->state, state, sizeof (e->state) - 1);
+	e->state[sizeof (e->state) - 1] = 0;
+	strncpy (e->result, result, sizeof (e->result) - 1);
+	e->result[sizeof (e->result) - 1] = 0;
+	return idx;
+}
+
+/*
+==================
+MCP_SetReceiptState
+
+Update one recorded receipt's state in place — never a new entry, so a
+lease that expired while the receipt was pending does not change its
+identity. A ring that wrapped past the slot makes this a no-op.
+==================
+*/
+static void MCP_SetReceiptState (int idx, char *aid, char *state)
+{
+	mcp_ledger_t *e;
+
+	if (idx < 0 || idx >= MCP_LEDGER_SIZE)
+		return;
+	e = &mcp_ledger[idx];
+	if (!e->action_id[0] || strcmp (e->action_id, aid) != 0)
+		return;
+	strncpy (e->state, state, sizeof (e->state) - 1);
+	e->state[sizeof (e->state) - 1] = 0;
+}
+
+/*
+==================
+MCP_ReplyMutation
+
+Uniform completion for a synchronous mutation: echo the action id into
+the result body (a receipt must identify itself), record the receipt,
+reply.
+==================
+*/
+static void MCP_ReplyMutation (char *line, char *id, char *op, unsigned hash,
+	char *result)
+{
+	char aid[128], esc[256], body[MCP_REPLY_MAX];
+	int n;
+
+	if (!MCP_Field (line, "action_id", aid, sizeof (aid)))
+		aid[0] = 0;
+	if (aid[0])
+	{
+		MCP_Escape (esc, sizeof (esc), aid);
+		n = strlen (result);
+		snprintf (body, sizeof (body), "%s%s\"action_id\":\"%s\"",
+			result, n ? "," : "", esc);
+	}
+	else
+		snprintf (body, sizeof (body), "%s", result);
+	MCP_RecordReceipt (op, aid, hash, "done", body);
+	MCP_Reply (id, true, NULL, body);
+}
+
+/*
+==================
+MCP_ModalOpened
+
+SCR_ModalMessage hook. When the dialog was entered from an MCP key op,
+reply needs_input to that op with the escaped dialog text and record a
+pending receipt under its action id (no id: no receipt, like every
+mutation). Returns 1 so the caller keeps the dialog visible on demand;
+0 for a human modal.
+==================
+*/
+int MCP_ModalOpened (char *text)
+{
+	char	esctext[2048], escaid[256], body[MCP_REPLY_MAX];
+	int	savedfd;
+
+	if (!mcp_in_key)
+		return 0;
+
+	// mcp_reply_fd is still the triggering op's connection: the dialog
+	// opens synchronously inside its Key_Event, before any nested poll
+	mcp_modal_fd = mcp_reply_fd;
+	strncpy (mcp_modal_id, mcp_key_id, sizeof (mcp_modal_id) - 1);
+	mcp_modal_id[sizeof (mcp_modal_id) - 1] = 0;
+	strncpy (mcp_modal_aid, mcp_key_aid, sizeof (mcp_modal_aid) - 1);
+	mcp_modal_aid[sizeof (mcp_modal_aid) - 1] = 0;
+
+	MCP_Escape (esctext, sizeof (esctext), text);
+	MCP_Escape (escaid, sizeof (escaid), mcp_modal_aid);
+	snprintf (body, sizeof (body),
+		"\"needs_input\":true,\"modal_text\":\"%s\","
+		"\"action_id\":\"%s\"", esctext, escaid);
+	mcp_modal_ledger = MCP_RecordReceipt ("key", mcp_modal_aid,
+		mcp_key_hash, "pending", body);
+	mcp_modal_replied = 1;
+	mcp_modal_open = 1;
+
+	// the deferred reply targets the triggering connection; the caller's
+	// own reply target is restored
+	savedfd = mcp_reply_fd;
+	mcp_reply_fd = mcp_modal_fd;
+	MCP_Reply (mcp_modal_id, true, NULL, body);
+	mcp_reply_fd = savedfd;
+	return 1;
+}
+
+/*
+==================
+MCP_ModalClosed
+
+SCR_ModalMessage hook, after the wait loop: settle the pending receipt
+(confirmed -> done, anything else -> denied). mcp_modal_replied and the
+modal identity stay set: the triggering key op consumes them when its
+Key_Event finally unwinds. Idempotent for human modals.
+==================
+*/
+void MCP_ModalClosed (qboolean confirmed)
+{
+	if (!mcp_modal_open)
+		return;
+	mcp_modal_open = 0;
+	MCP_SetReceiptState (mcp_modal_ledger, mcp_modal_aid,
+		confirmed ? "done" : "denied");
 }
 
 /*
@@ -694,37 +1050,37 @@ static void MCP_FinishAct (qboolean interrupted)
 {
 	char result[MCP_REPLY_MAX];
 	char aid[256];
-	int elapsed;
+	float yaw_applied, pitch_applied;
+	int elapsed, savedfd;
 
 	if (!mcp_act_active)
 		return;
 	MCP_Escape (aid, sizeof (aid), mcp_act_aid);
+	// read the applied view before MCP_EndInput neutralizes it
+	MCP_InputStats (&yaw_applied, &pitch_applied);
 	elapsed = (int)((Sys_DoubleTime () - mcp_act_start) * 1000.0);
 	if (elapsed < 0)
 		elapsed = 0;
 	snprintf (result, sizeof (result),
 		"\"completed_ticks\":%d,\"elapsed_ms\":%d,\"interrupted\":%s,"
-		"\"action_id\":\"%s\"",
-		mcp_act_completed, elapsed, interrupted ? "true" : "false", aid);
+		"\"action_id\":\"%s\",\"yaw_applied_deg\":%.2f,"
+		"\"pitch_applied_deg\":%.2f,\"weapon_requested\":%d,"
+		"\"weapon_active\":%d",
+		mcp_act_completed, elapsed, interrupted ? "true" : "false", aid,
+		yaw_applied, pitch_applied, mcp_act_impulse,
+		cl.stats[STAT_ACTIVEWEAPON]);
 
 	// record the receipt before replying: a caller that retries after a
 	// dropped connection gets this result instead of a second execution
-	if (mcp_act_aid[0])
-	{
-		mcp_ledger_t *e = &mcp_ledger[mcp_ledger_next];
+	MCP_RecordReceipt ("act", mcp_act_aid, mcp_act_hash, "done", result);
 
-		mcp_ledger_next = (mcp_ledger_next + 1) % MCP_LEDGER_SIZE;
-		strncpy (e->lease, mcp_act_lease, sizeof (e->lease) - 1);
-		e->lease[sizeof (e->lease) - 1] = 0;
-		strncpy (e->action_id, mcp_act_aid, sizeof (e->action_id) - 1);
-		e->action_id[sizeof (e->action_id) - 1] = 0;
-		e->epoch = mcp_act_epoch;
-		e->hash = mcp_act_hash;
-		strncpy (e->result, result, sizeof (e->result) - 1);
-		e->result[sizeof (e->result) - 1] = 0;
-	}
-
+	// the deferred reply targets the connection that armed the act; the
+	// caller's own reply target (an enclosing handler) is restored
+	savedfd = mcp_reply_fd;
+	mcp_reply_fd = mcp_act_fd;
+	mcp_act_fd = -1;
 	MCP_Reply (mcp_act_id, true, NULL, result);
+	mcp_reply_fd = savedfd;
 	MCP_EndInput ();
 	mcp_act_active = 0;
 	// the deferred reply is how a long action proved it was alive
@@ -736,7 +1092,9 @@ static void MCP_FinishAct (qboolean interrupted)
 MCP_ClearControl
 
 Release the controller lease and any running action. Used by control
-release/detach and the queue-jumping release op. Idempotent.
+release/detach and the queue-jumping release op. Idempotent. A modal
+waiting on the revoked controller is answered with the escape a human
+would press, so the dialog never outlives the lease that opened it.
 ==================
 */
 static void MCP_ClearControl (void)
@@ -746,6 +1104,20 @@ static void MCP_ClearControl (void)
 	mcp_lease_id[0] = 0;
 	MCP_FinishAct (true);
 	MCP_EndInput ();
+
+	if (mcp_modal_open)
+	{
+		// this runs on the modal's own thread of control (MCP_Poll is
+		// pumped from the wait loop), so the injected escape closes the
+		// dialog when it next inspects key_lastpress. Nothing on the
+		// Key_Event path reaches the bridge, so it cannot re-enter
+		// MCP_ClearControl. key_count -1 swallows the press exactly
+		// like a human keypress caught by the loop.
+		MCP_SetReceiptState (mcp_modal_ledger, mcp_modal_aid, "denied");
+		key_count = -1;
+		Key_Event (K_ESCAPE, true);
+		Key_Event (K_ESCAPE, false);
+	}
 }
 
 /*
@@ -767,30 +1139,202 @@ void MCP_NoteTick (void)
 
 /*
 ==================
-MCP_HashAct
+MCP_HashRequest
 
-FNV-1a over the canonical argument values of an act request (never the
-wire id, sequence or lease, which vary between a call and its retry).
+FNV-1a over the op name and every top-level request field except the
+envelope and identity fields (v, auth, id, lease, epoch, seq, action_id,
+world_generation, control_revision). Only those may vary between a
+mutation and its retry, so only they stay out of the hash; every
+argument decides the identity. Values are hashed as they appear on the
+wire, so a retry repeats them exactly.
 ==================
 */
-static unsigned MCP_HashAct (float fwd, float strafe, float vert, float yaw,
-	float pitch, int run, int attack, int jump, int impulse,
-	int has_ticks, int ticks, int dur)
+static unsigned MCP_HashRequest (char *op, char *line)
 {
-	unsigned h = 2166136261u;
-	char buf[256];
-	char *p;
+	static const char *envelope[] = {
+		"v", "auth", "id", "lease", "epoch", "seq",
+		"action_id", "world_generation", "control_revision", NULL
+	};
+	char key[64];
+	char *p, *q;
+	unsigned h;
+	int depth, i, n, skip;
 
-	snprintf (buf, sizeof (buf),
-		"%.3f|%.3f|%.3f|%.3f|%.3f|%d|%d|%d|%d|%d|%d|%d",
-		fwd, strafe, vert, yaw, pitch, run, attack, jump, impulse,
-		has_ticks, ticks, dur);
-	for (p = buf; *p; p++)
+	h = 2166136261u;
+	for (q = op; *q; q++)
 	{
-		h ^= (unsigned char)*p;
+		h ^= (unsigned char)*q;
 		h *= 16777619u;
 	}
+
+	p = line;
+	if (*p == '{')
+		p++;
+	depth = 0;
+	while (*p)
+	{
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p != '"')
+		{
+			if (*p == '{' || *p == '[')
+				depth++;
+			else if (*p == '}' || *p == ']')
+			{
+				if (depth == 0)
+					break;
+				depth--;
+			}
+			p++;
+			continue;
+		}
+	// one top-level key
+		q = p + 1;
+		n = 0;
+		while (*q && *q != '"')
+		{
+			if (*q == '\\' && q[1])
+				q++;
+			if (n + 1 < (int)sizeof (key))
+				key[n++] = *q;
+			q++;
+		}
+		key[n] = 0;
+		if (*q == '"')
+			q++;
+		if (depth > 0)
+		{
+			p = q;
+			continue;
+		}
+		p = strchr (q, ':');
+		if (!p)
+			break;
+		p++;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		skip = false;
+		for (i = 0; envelope[i]; i++)
+		{
+			if (!strcmp (key, envelope[i]))
+			{
+				skip = true;
+				break;
+			}
+		}
+		if (!skip)
+		{
+			for (q = key; *q; q++)
+			{
+				h ^= (unsigned char)*q;
+				h *= 16777619u;
+			}
+			h ^= '=';
+			h *= 16777619u;
+		}
+		if (*p == '"')
+		{
+		// quoted value: hash the wire bytes, escapes included
+			for (p++; *p && *p != '"'; p++)
+			{
+				if (!skip)
+				{
+					h ^= (unsigned char)*p;
+					h *= 16777619u;
+				}
+				if (*p == '\\' && p[1])
+				{
+					p++;
+					if (!skip)
+					{
+						h ^= (unsigned char)*p;
+						h *= 16777619u;
+					}
+				}
+			}
+			if (*p == '"')
+				p++;
+		}
+		else
+		{
+		// raw value (number, bool, null, nested): hash to the member end
+			int d = 0;
+
+			while (*p)
+			{
+				if (*p == '{' || *p == '[')
+					d++;
+				else if (*p == '}' || *p == ']')
+				{
+					if (d == 0)
+						break;
+					d--;
+				}
+				else if (*p == ',' && d == 0)
+					break;
+				if (!skip)
+				{
+					h ^= (unsigned char)*p;
+					h *= 16777619u;
+				}
+				p++;
+			}
+		}
+	}
 	return h;
+}
+
+/*
+==================
+MCP_LookupReceipt
+
+Duplicate detection for a mutation: a matching (op, lease, action_id,
+epoch) with the same argument hash replies with the recorded result
+marked "duplicate"; the same identity with different arguments is
+refused, never executed twice. Returns true when a reply was sent.
+==================
+*/
+static qboolean MCP_LookupReceipt (char *line, char *id)
+{
+	char op[64], aid[128], leas[64], epocs[32];
+	char body[MCP_REPLY_MAX];
+	unsigned hash;
+	int i;
+
+	if (!MCP_Field (line, "action_id", aid, sizeof (aid)) || !aid[0])
+		return false;
+	if (!MCP_Field (line, "op", op, sizeof (op)))
+		return false;
+	leas[0] = 0;
+	epocs[0] = 0;
+	MCP_Field (line, "lease", leas, sizeof (leas));
+	MCP_Field (line, "epoch", epocs, sizeof (epocs));
+	hash = MCP_HashRequest (op, line);
+	for (i = 0; i < MCP_LEDGER_SIZE; i++)
+	{
+		mcp_ledger_t *e = &mcp_ledger[i];
+
+		if (e->action_id[0] == 0
+			|| strcmp (e->op, op) != 0
+			|| strcmp (e->action_id, aid) != 0
+			|| strcmp (e->lease, leas) != 0
+			|| e->epoch != atoi (epocs))
+			continue;
+		if (e->hash == hash)
+		{
+			if (e->result[0])
+				snprintf (body, sizeof (body),
+					"\"duplicate\":true,%s", e->result);
+			else
+				strcpy (body, "\"duplicate\":true");
+			MCP_Reply (id, true, NULL, body);
+		}
+		else
+			MCP_Reply (id, false, "POLICY_DENIED",
+				"action_id reused with different arguments");
+		return true;
+	}
+	return false;
 }
 
 /*
@@ -809,20 +1353,13 @@ static void MCP_CheckAction (void)
 	if (!mcp_act_active)
 		return;
 	now = Sys_DoubleTime ();
-	if (mcp_act_mode == MCP_ACT_TICKS)
-	{
-		if (mcp_act_completed >= mcp_act_ticks)
-			MCP_FinishAct (false);
-		else if (now - mcp_act_start >= MCP_ACT_CAP)
-			MCP_FinishAct (true);
-	}
-	else
-	{
-		if (now - mcp_act_start >= mcp_act_duration)
-			MCP_FinishAct (false);
-		else if (now - mcp_act_start >= MCP_ACT_CAP)
-			MCP_FinishAct (true);
-	}
+	if ((mcp_act_mode == MCP_ACT_TICKS
+			&& mcp_act_completed >= mcp_act_ticks)
+		|| (mcp_act_mode == MCP_ACT_DURATION
+			&& now - mcp_act_start >= mcp_act_duration))
+		MCP_FinishAct (false);
+	else if (now - mcp_act_start >= MCP_ACT_CAP)
+		MCP_FinishAct (true);
 }
 
 /*
@@ -844,20 +1381,110 @@ void MCP_NoteWorldSpawn (void)
 MCP_CheckLease
 
 Expire the controller lease after 2 s without a heartbeat. Expiry
-clears MCP input so no synthetic button survives a dead controller.
+clears MCP input so no synthetic button survives a dead controller,
+even mid-action: a deferred act is interrupted at expiry instead of
+running to its wall cap on a silent lease.
 ==================
 */
 static void MCP_CheckLease (void)
 {
 	if (!mcp_lease_active)
 		return;
-	// an action in flight is activity: its own wall cap bounds it, and
-	// its completion refreshes the lease (the client cannot heartbeat
-	// while the reply is deferred)
-	if (mcp_act_active)
-		return;
 	if (Sys_DoubleTime () - mcp_lease_lastbeat > MCP_LEASE_TIMEOUT)
 		MCP_ClearControl ();
+}
+
+/*
+==================
+MCP_CheckPreconditions
+
+The shared mutation gate: live lease, matching lease id and epoch, and
+the world/control generations when the caller pinned them. Replies and
+returns false on the first failure.
+==================
+*/
+static qboolean MCP_CheckPreconditions (char *line, char *id)
+{
+	char leas[64] = { 0 }, epocs[32] = { 0 };
+	char worlds[32] = { 0 }, ctrls[32] = { 0 };
+
+	if (!mcp_lease_active || mcp_lease_id[0] == 0)
+	{
+		MCP_Reply (id, false, "STALE_STATE", "no lease");
+		return false;
+	}
+	if (!MCP_Field (line, "lease", leas, sizeof (leas))
+		|| strcmp (leas, mcp_lease_id) != 0)
+	{
+		MCP_Reply (id, false, "STALE_STATE", "lease mismatch");
+		return false;
+	}
+	if (!MCP_Field (line, "epoch", epocs, sizeof (epocs))
+		|| atoi (epocs) != mcp_epoch)
+	{
+		MCP_Reply (id, false, "STALE_STATE", "epoch mismatch");
+		return false;
+	}
+	if (MCP_Field (line, "world_generation", worlds, sizeof (worlds))
+		&& atoi (worlds) != mcp_world_gen)
+	{
+		MCP_Reply (id, false, "STALE_STATE",
+			"world generation mismatch");
+		return false;
+	}
+	if (MCP_Field (line, "control_revision", ctrls, sizeof (ctrls))
+		&& atoi (ctrls) != mcp_control_rev)
+	{
+		MCP_Reply (id, false, "STALE_STATE",
+			"control revision mismatch");
+		return false;
+	}
+	return true;
+}
+
+/*
+==================
+MCP_CheckSequence
+
+The lease sequence high-water: a spent sequence whose receipt did not
+surface above must never execute again. The caller consumes the
+sequence once the mutation actually runs.
+==================
+*/
+static qboolean MCP_CheckSequence (char *line, char *id, int *seq)
+{
+	char seqs[32];
+
+	if (!MCP_Field (line, "seq", seqs, sizeof (seqs)))
+	{
+		MCP_Reply (id, false, "INVALID_CONTEXT", "mutation needs seq");
+		return false;
+	}
+	*seq = atoi (seqs);
+	if (*seq <= mcp_lease_seq)
+	{
+		MCP_Reply (id, false, "RESULT_EXPIRED",
+			"sequence already consumed");
+		return false;
+	}
+	return true;
+}
+
+/*
+==================
+MCP_GameplayReady
+
+The act gate: a local world must be loaded, past sign-on, past the
+fork's two dropped movement messages, alive and unpaused. The design's
+playback-facing gate; the death flow's respawn action relaxes it
+explicitly (Task 7).
+==================
+*/
+static qboolean MCP_GameplayReady (void)
+{
+	return sv.active && cls.signon == 4 && cl.movemessages > 2
+		&& cl.stats[STAT_HEALTH] > 0 && !cl.intermission
+		&& !sv.paused;
 }
 
 /*
@@ -877,10 +1504,11 @@ static void MCP_HandleLine (char *line)
 	char auth[128], id[128], op[64];
 	char text[MCP_EXEC_MAX + 1];
 	char name[128], value[1024];
-	char tail[8192], esctail[8192 * 2], result[MCP_REPLY_MAX];
+	char result[MCP_REPLY_MAX];
 	char escval[2048];
 	cvar_t *var;
-	int r;
+	unsigned hash = 0;
+	int r, seq = 0;
 
 	if (!MCP_Field (line, "id", id, sizeof (id)))
 		strcpy (id, "");
@@ -888,6 +1516,13 @@ static void MCP_HandleLine (char *line)
 		|| strcmp (auth, mcp_token) != 0)
 	{
 		MCP_Reply (id, false, "POLICY_DENIED", "bad auth");
+		return;
+	}
+	// the wire protocol is v1; additions are additive fields only
+	if (MCP_FieldRawInt (line, "v") != 1)
+	{
+		MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY",
+			"protocol version");
 		return;
 	}
 	if (!MCP_Field (line, "op", op, sizeof (op)))
@@ -902,35 +1537,65 @@ static void MCP_HandleLine (char *line)
 		return;
 	}
 
+	if (!strcmp (op, "tail"))
+	{
+		MCP_FormatTail (result, sizeof (result));
+		MCP_Reply (id, true, NULL, result);
+		return;
+	}
+
 	if (!strcmp (op, "exec"))
 	{
 		r = MCP_Field (line, "text", text, sizeof (text));
-		if (r == 0)
-		{
-			MCP_Reply (id, false, "INVALID_CONTEXT", "exec needs text");
-			return;
-		}
 		if (r < 0)
 		{
 			MCP_Reply (id, false, "POLICY_DENIED", "exec text over 4 KiB");
 			return;
 		}
+		if (r == 0 || text[0] == 0)
+		{
+			// no text mutates nothing: this stays a read until the
+			// tail op replaces the old exec text="" idiom
+			MCP_FormatTail (result, sizeof (result));
+			MCP_Reply (id, true, NULL, result);
+			return;
+		}
+		hash = MCP_HashRequest (op, line);
+		if (MCP_LookupReceipt (line, id))
+			return;
+		if (!MCP_CheckPreconditions (line, id))
+			return;
+		if (!MCP_CheckSequence (line, id, &seq))
+			return;
 		Cbuf_AddText (text);
-		if (text[0] && text[strlen (text) - 1] != '\n')
+		if (text[strlen (text) - 1] != '\n')
 			Cbuf_AddText ("\n");
-		MCP_ConsoleTail (tail, sizeof (tail));
-		MCP_Escape (esctail, sizeof (esctail), tail);
-		snprintf (result, sizeof (result), "\"output\":\"%s\"", esctail);
-		MCP_Reply (id, true, NULL, result);
+		mcp_lease_seq = seq;
+		MCP_FormatTail (result, sizeof (result));
+		MCP_ReplyMutation (line, id, op, hash, result);
 		return;
 	}
 
 	if (!strcmp (op, "cvar"))
 	{
+		int hasval;
+
 		if (!MCP_Field (line, "name", name, sizeof (name)))
 		{
 			MCP_Reply (id, false, "INVALID_CONTEXT", "cvar needs name");
 			return;
+		}
+		// a value makes this a mutation; without one it is a read
+		hasval = MCP_Field (line, "value", value, sizeof (value)) != 0;
+		if (hasval)
+		{
+			hash = MCP_HashRequest (op, line);
+			if (MCP_LookupReceipt (line, id))
+				return;
+			if (!MCP_CheckPreconditions (line, id))
+				return;
+			if (!MCP_CheckSequence (line, id, &seq))
+				return;
 		}
 		var = Cvar_FindVar (name);
 		if (!var)
@@ -938,18 +1603,31 @@ static void MCP_HandleLine (char *line)
 			MCP_Reply (id, false, "INVALID_CONTEXT", name);
 			return;
 		}
-		if (MCP_Field (line, "value", value, sizeof (value)))
+		if (hasval)
+		{
 			Cvar_Set (name, value);
+			mcp_lease_seq = seq;
+		}
 		MCP_Escape (escval, sizeof (escval), var->string);
 		snprintf (result, sizeof (result), "\"value\":\"%s\"", escval);
-		MCP_Reply (id, true, NULL, result);
+		if (hasval)
+			MCP_ReplyMutation (line, id, op, hash, result);
+		else
+			MCP_Reply (id, true, NULL, result);
 		return;
 	}
 
 	if (!strcmp (op, "key"))
 	{
-		int	key, down;
+		int	key, down, keyfd;
 
+		hash = MCP_HashRequest (op, line);
+		if (MCP_LookupReceipt (line, id))
+			return;
+		if (!MCP_CheckPreconditions (line, id))
+			return;
+		if (!MCP_CheckSequence (line, id, &seq))
+			return;
 		key = MCP_FieldInt (line, "key");
 		down = MCP_FieldInt (line, "down");
 		if (key < 0 || key > 255)
@@ -957,9 +1635,31 @@ static void MCP_HandleLine (char *line)
 			MCP_Reply (id, false, "INVALID_CONTEXT", "key out of range");
 			return;
 		}
+		// the sequence is spent now: Key_Event may open a modal whose
+		// wait loop pumps the answer (and more ops) before this handler
+		// unwinds, and those must see the advanced high-water
+		mcp_lease_seq = seq;
+		// remember the triggering op so a modal opened inside Key_Event
+		// can answer it; a modal that replied makes this op skip its
+		// own reply, exactly once, matched by connection and request id
+		keyfd = mcp_reply_fd;
+		strncpy (mcp_key_id, id, sizeof (mcp_key_id) - 1);
+		mcp_key_id[sizeof (mcp_key_id) - 1] = 0;
+		if (!MCP_Field (line, "action_id", mcp_key_aid,
+			sizeof (mcp_key_aid)))
+			mcp_key_aid[0] = 0;
+		mcp_key_hash = hash;
+		mcp_in_key = 1;
 		// routes through the normal UI path (key_dest decides who sees it)
 		Key_Event (key, down ? true : false);
-		MCP_Reply (id, true, NULL, "\"ok\":true");
+		mcp_in_key = 0;
+		if (mcp_modal_replied && mcp_modal_fd == keyfd
+			&& !strcmp (mcp_modal_id, id))
+		{
+			mcp_modal_replied = 0;
+			return;
+		}
+		MCP_ReplyMutation (line, id, op, hash, "\"ok\":true");
 		return;
 	}
 
@@ -1007,6 +1707,13 @@ static void MCP_HandleLine (char *line)
 		{
 			char mode[32];
 
+			hash = MCP_HashRequest (op, line);
+			if (MCP_LookupReceipt (line, id))
+				return;
+			if (!MCP_CheckPreconditions (line, id))
+				return;
+			if (!MCP_CheckSequence (line, id, &seq))
+				return;
 			if (!MCP_Field (line, "mode", mode, sizeof (mode)))
 			{
 				MCP_Reply (id, false, "INVALID_CONTEXT",
@@ -1022,9 +1729,10 @@ static void MCP_HandleLine (char *line)
 				MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY", mode);
 				return;
 			}
+			mcp_lease_seq = seq;
 			snprintf (result, sizeof (result), "\"mode\":\"%s\"",
 				mcp_step_mode ? "stepped" : "realtime");
-			MCP_Reply (id, true, NULL, result);
+			MCP_ReplyMutation (line, id, op, hash, result);
 			return;
 		}
 		MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY", sub);
@@ -1077,6 +1785,43 @@ static void MCP_HandleLine (char *line)
 		return;
 	}
 
+	if (!strcmp (op, "status"))
+	{
+		char want[128] = { 0 };
+		char body[MCP_REPLY_MAX];
+		mcp_ledger_t *e = NULL;
+		int back;
+
+		// with an action id, the newest receipt for the current epoch
+		// (held under any lease); without one, the newest receipt
+		MCP_Field (line, "action_id", want, sizeof (want));
+		for (back = 0; back < MCP_LEDGER_SIZE && !e; back++)
+		{
+			mcp_ledger_t *c = &mcp_ledger[(mcp_ledger_next - 1 - back
+				+ 2 * MCP_LEDGER_SIZE) % MCP_LEDGER_SIZE];
+
+			if (c->action_id[0] == 0)
+				continue;
+			if (want[0] && (strcmp (c->action_id, want) != 0
+				|| c->epoch != mcp_epoch))
+				continue;
+			e = c;
+		}
+		if (!e)
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "no receipt");
+			return;
+		}
+		if (e->result[0])
+			snprintf (body, sizeof (body), "%s,\"state\":\"%s\"",
+				e->result, e->state);
+		else
+			snprintf (body, sizeof (body), "\"state\":\"%s\"",
+				e->state);
+		MCP_Reply (id, true, NULL, body);
+		return;
+	}
+
 	if (!strcmp (op, "observe"))
 	{
 		int after, tmo;
@@ -1087,6 +1832,7 @@ static void MCP_HandleLine (char *line)
 				"observe already pending");
 			return;
 		}
+		mcp_observe_fd = mcp_reply_fd;
 		strcpy (mcp_observe_id, id);
 		after = MCP_FieldInt (line, "after_frame");
 		tmo = MCP_FieldInt (line, "timeout_ms");
@@ -1101,32 +1847,22 @@ static void MCP_HandleLine (char *line)
 
 	if (!strcmp (op, "act"))
 	{
-		char leas[64], aida[128], seqs[32], epocs[32];
-		char tickss[32], durs[32], worlds[32], ctrls[32];
+		char aida[128], epocs[32];
+		char tickss[32], durs[32];
 		char jumps[16];
-		int epoch, seq, ticks, dur;
-		int has_ticks, has_dur, jump, impulse, run, attack;
-		unsigned hash;
-		int i;
+		int ticks, dur;
+		int has_ticks, has_dur, jump, impulse, run, attack, respawn;
 		float fwd, strafe, vert, yaw, pitch;
 
 		// parse every argument before deciding anything: duplicate
 		// detection needs the full argument hash, and it runs before
 		// the state preconditions so a legitimate retry still gets the
 		// receipt after its lease or world moved on
-		MCP_Field (line, "lease", leas, sizeof (leas));
 		if (!MCP_Field (line, "epoch", epocs, sizeof (epocs)))
 		{
 			MCP_Reply (id, false, "INVALID_CONTEXT", "act needs epoch");
 			return;
 		}
-		epoch = atoi (epocs);
-		if (!MCP_Field (line, "seq", seqs, sizeof (seqs)))
-		{
-			MCP_Reply (id, false, "INVALID_CONTEXT", "act needs seq");
-			return;
-		}
-		seq = atoi (seqs);
 		has_ticks = MCP_Field (line, "ticks", tickss, sizeof (tickss)) > 0;
 		has_dur = MCP_Field (line, "duration_ms", durs,
 			sizeof (durs)) > 0;
@@ -1147,6 +1883,7 @@ static void MCP_HandleLine (char *line)
 		run = MCP_FieldInt (line, "run") != 0;
 		attack = MCP_FieldInt (line, "attack") != 0;
 		impulse = MCP_FieldInt (line, "impulse");
+		respawn = MCP_FieldInt (line, "respawn") != 0;
 		jump = 0;
 		if (MCP_Field (line, "jump", jumps, sizeof (jumps)))
 		{
@@ -1158,77 +1895,24 @@ static void MCP_HandleLine (char *line)
 		if (!MCP_Field (line, "action_id", aida, sizeof (aida)))
 			aida[0] = 0;
 
-		hash = MCP_HashAct (fwd, strafe, vert, yaw, pitch, run, attack,
-			jump, impulse, has_ticks, ticks, dur);
+		hash = MCP_HashRequest (op, line);
 
-		// known duplicate: the same lease + action_id + arguments
+		// known duplicate: the same op + lease + action_id + arguments
 		// returns its recorded receipt; different arguments under the
 		// same id are a conflict, never a second execution. Acts with
 		// no action_id carry no identity and are never deduplicated.
-		if (aida[0])
-		{
-			for (i = 0; i < MCP_LEDGER_SIZE; i++)
-			{
-				mcp_ledger_t *e = &mcp_ledger[i];
-
-				if (e->action_id[0] == 0 || e->epoch != epoch
-					|| strcmp (e->action_id, aida) != 0
-					|| strcmp (e->lease, leas) != 0)
-					continue;
-				if (e->hash == hash)
-				{
-					MCP_Reply (id, true, NULL, e->result);
-					return;
-				}
-				MCP_Reply (id, false, "POLICY_DENIED",
-					"action_id reused with different arguments");
-				return;
-			}
-		}
-
-		if (!mcp_lease_active || mcp_lease_id[0] == 0)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "no lease");
+		if (MCP_LookupReceipt (line, id))
 			return;
-		}
-		if (strcmp (leas, mcp_lease_id) != 0)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "lease mismatch");
+		if (!MCP_CheckPreconditions (line, id))
 			return;
-		}
-		if (epoch != mcp_epoch)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "epoch mismatch");
-			return;
-		}
-		if (MCP_Field (line, "world_generation", worlds, sizeof (worlds))
-			&& atoi (worlds) != mcp_world_gen)
-		{
-			MCP_Reply (id, false, "STALE_STATE",
-				"world generation mismatch");
-			return;
-		}
-		if (MCP_Field (line, "control_revision", ctrls, sizeof (ctrls))
-			&& atoi (ctrls) != mcp_control_rev)
-		{
-			MCP_Reply (id, false, "STALE_STATE",
-				"control revision mismatch");
-			return;
-		}
 		if (mcp_act_active)
 		{
 			MCP_Reply (id, false, "CONTROL_BUSY",
 				"action already running");
 			return;
 		}
-		if (seq <= mcp_lease_seq)
-		{
-			// the sequence is spent and no receipt survived in the
-			// ring: the original result can no longer be returned
-			MCP_Reply (id, false, "RESULT_EXPIRED",
-				"sequence already consumed");
+		if (!MCP_CheckSequence (line, id, &seq))
 			return;
-		}
 
 		if (has_ticks)
 		{
@@ -1261,15 +1945,23 @@ static void MCP_HandleLine (char *line)
 			mcp_act_duration = dur / 1000.0;
 		}
 
+		// gameplay actions need a live world; the respawn action is
+		// the one deliberate exception (the player is dead by design)
+		if (!respawn && !MCP_GameplayReady ())
+		{
+			MCP_Reply (id, false, "NOT_READY",
+				"no ready local game");
+			return;
+		}
+
 		MCP_BeginInput (fwd, strafe, vert, yaw, pitch, attack,
 			jump, impulse, run ? true : false);
+		mcp_act_fd = mcp_reply_fd;
 		strcpy (mcp_act_id, id);
 		strncpy (mcp_act_aid, aida, sizeof (mcp_act_aid) - 1);
 		mcp_act_aid[sizeof (mcp_act_aid) - 1] = 0;
-		strncpy (mcp_act_lease, leas, sizeof (mcp_act_lease) - 1);
-		mcp_act_lease[sizeof (mcp_act_lease) - 1] = 0;
 		mcp_act_hash = hash;
-		mcp_act_epoch = epoch;
+		mcp_act_impulse = impulse;
 		mcp_act_start = Sys_DoubleTime ();
 		mcp_act_completed = 0;
 		mcp_lease_seq = seq;
@@ -1284,44 +1976,46 @@ static void MCP_HandleLine (char *line)
 
 /*
 ==================
-MCP_PollClient
+MCP_PollSlot
 
-Drain complete lines within the poll budget. Oversize lines are
-dropped and counted, never grown.
+Drain complete lines from one connection within the poll budget.
+Oversize lines are dropped and counted, never grown.
 ==================
 */
-static void MCP_PollClient (double stop)
+static void MCP_PollSlot (int i, double stop)
 {
+	mcp_slot_t *s;
 	char *nl;
 	int n;
 
+	s = &mcp_slots[i];
 	for (;;)
 	{
 		if (Sys_DoubleTime () >= stop)
 			return;
-		if (mcp_client_fd < 0)
+		if (s->fd < 0)
 			return;
-		if (mcp_line_len >= MCP_LINE_MAX)
+		if (s->len >= MCP_LINE_MAX)
 		{
-			mcp_line_len = 0;
+			s->len = 0;
 			mcp_oversize_drops++;
 			continue;
 		}
-		n = recv (mcp_client_fd, mcp_line + mcp_line_len,
-			MCP_LINE_MAX - mcp_line_len, 0);
+		n = recv (s->fd, s->line + s->len, MCP_LINE_MAX - s->len, 0);
 		if (n > 0)
 		{
-			mcp_line_len += n;
-			mcp_line[mcp_line_len] = 0;
-			while ((nl = strchr (mcp_line, '\n')) != NULL)
+			s->len += n;
+			s->line[s->len] = 0;
+			while ((nl = strchr (s->line, '\n')) != NULL)
 			{
 				*nl = 0;
-				MCP_HandleLine (mcp_line);
-				if (mcp_client_fd < 0)
+				mcp_reply_fd = s->fd;
+				MCP_HandleLine (s->line);
+				if (s->fd < 0)
 					return;
 				n = strlen (nl + 1);
-				memmove (mcp_line, nl + 1, n + 1);
-				mcp_line_len = n;
+				memmove (s->line, nl + 1, n + 1);
+				s->len = n;
 				if (Sys_DoubleTime () >= stop)
 					return;
 			}
@@ -1329,13 +2023,33 @@ static void MCP_PollClient (double stop)
 		}
 		if (n == 0)
 		{
-			MCP_CloseClient ();
+			MCP_CloseSlot (i);
 			return;
 		}
 		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
 			return;
-		MCP_CloseClient ();
+		MCP_CloseSlot (i);
 		return;
+	}
+}
+
+/*
+==================
+MCP_PollClient
+
+Drain every occupied slot within the poll budget, so one quiet or
+stalled peer never starves the other connection.
+==================
+*/
+static void MCP_PollClient (double stop)
+{
+	int i;
+
+	for (i = 0; i < MCP_SLOTS; i++)
+	{
+		if (Sys_DoubleTime () >= stop)
+			return;
+		MCP_PollSlot (i, stop);
 	}
 }
 
@@ -1346,14 +2060,22 @@ MCP_Init
 */
 void MCP_Init (void)
 {
+	int i;
+
 	Cvar_RegisterVariable (&mcp_enabled);
 	Cvar_RegisterVariable (&mcp_port);
 
 	mcp_listen_fd = -1;
-	mcp_client_fd = -1;
+	for (i = 0; i < MCP_SLOTS; i++)
+	{
+		mcp_slots[i].fd = -1;
+		mcp_slots[i].len = 0;
+	}
+	mcp_reply_fd = -1;
+	mcp_act_fd = -1;
+	mcp_observe_fd = -1;
 	mcp_token[0] = 0;
 	mcp_token_path[0] = 0;
-	mcp_line_len = 0;
 	mcp_oversize_drops = 0;
 	mcp_retry_at = 0;
 
@@ -1366,6 +2088,16 @@ void MCP_Init (void)
 	mcp_act_active = 0;
 	mcp_world_gen = 0;
 	mcp_observe_id[0] = 0;
+	mcp_in_key = 0;
+	mcp_modal_open = 0;
+	mcp_modal_fd = -1;
+	mcp_modal_id[0] = 0;
+	mcp_modal_aid[0] = 0;
+	mcp_modal_ledger = -1;
+	mcp_modal_replied = 0;
+	mcp_key_id[0] = 0;
+	mcp_key_aid[0] = 0;
+	mcp_key_hash = 0;
 	MCAP_Shutdown ();	// normalize capture ring/statics
 }
 
@@ -1398,11 +2130,19 @@ void MCP_Poll (void)
 		if (rc == 1)
 			MCP_SendObservation (&snap);
 		else if (rc == -1)
+		{
+			mcp_reply_fd = mcp_observe_fd;
+			mcp_observe_fd = -1;
 			MCP_Reply (mcp_observe_id, false, "FRAME_TIMEOUT",
 				"no rendered frame within the window");
+		}
 		else if (rc == -2)
+		{
+			mcp_reply_fd = mcp_observe_fd;
+			mcp_observe_fd = -1;
 			MCP_Reply (mcp_observe_id, false, "RENDER_UNAVAILABLE",
 				"frame readback unavailable");
+		}
 	}
 
 	if (mcp_listen_fd < 0)
@@ -1414,29 +2154,25 @@ void MCP_Poll (void)
 
 	for (;;)
 	{
+		int slot;
+
 		fd = accept (mcp_listen_fd, NULL, NULL);
 		if (fd < 0)
 			break;
-		if (mcp_client_fd >= 0)
+		// The control layer opens one connection per call. Take a free
+		// slot; when both are busy, reap a slot whose peer already said
+		// goodbye; a live pair keeps the endpoint and the new fd drops.
+		slot = MCP_FreeSlot ();
+		if (slot < 0)
+			slot = MCP_ReapEofSlot ();
+		if (slot < 0)
 		{
-			// The control layer opens one connection per call. If the
-			// previous client already said goodbye, reap it and take
-			// this one; a still-live client keeps the endpoint.
-			char probe;
-			int pn;
-
-			pn = recv (mcp_client_fd, &probe, 1, MSG_PEEK);
-			if (!(pn == 0 || (pn < 0 && errno != EAGAIN
-				&& errno != EWOULDBLOCK && errno != EINTR)))
-			{
-				close (fd);
-				continue;
-			}
-			MCP_CloseClient ();
+			close (fd);
+			continue;
 		}
 		MCP_SetNonblock (fd);
-		mcp_client_fd = fd;
-		mcp_line_len = 0;
+		mcp_slots[slot].fd = fd;
+		mcp_slots[slot].len = 0;
 		if (Sys_DoubleTime () >= stop)
 			return;
 	}
@@ -1451,7 +2187,7 @@ MCP_Shutdown
 */
 void MCP_Shutdown (void)
 {
-	MCP_CloseClient ();
+	MCP_CloseAll ();
 	if (mcp_listen_fd >= 0)
 		close (mcp_listen_fd);
 	mcp_listen_fd = -1;

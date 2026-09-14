@@ -4,6 +4,7 @@ Profiles are a hardcoded table — never a shell command. Child
 stdout/stderr go to the platform temp dir, never the repo. The token
 is read from the bridge's private file, never CLI or logs.
 """
+import collections
 import glob
 import os
 import subprocess
@@ -14,7 +15,11 @@ import time
 from .engine import BridgeClient
 from .models import EngineDisconnected, QuakeMCPError
 
-TOKEN_WAIT_SECS = 10.0
+# Token wait covers a plain (no -nosound) start: the CoreAudio device
+# open on this host can stall S_Init for ~15 s before MCP_Init writes
+# the token. 10 s failed the lifecycle launch; 30 s is behavior-neutral
+# for users (only a longer failure wait).
+TOKEN_WAIT_SECS = 30.0
 PING_RETRIES = 3
 HEARTBEAT_SECS = 0.5
 
@@ -47,6 +52,13 @@ class Instance:
         self._proc = proc
         self._hb_stop = None
         self._hb_thread = None
+        self.lease = ""
+        self.epoch = 0
+        self.next_seq = 0
+        # delivered act observations keyed by action_id (Task 5); the
+        # bridge ledger replays a duplicate's metadata, this replays its
+        # frame
+        self.receipts = collections.OrderedDict()
 
     def client(self):
         return BridgeClient("127.0.0.1", self.port, self.token)
@@ -90,6 +102,7 @@ class Instance:
         if self._hb_stop is not None:
             self._hb_stop.set()
             self._hb_stop = None
+        self._hb_thread = None
 
     def stop(self):
         self.stop_keepalive()
@@ -127,7 +140,7 @@ def _token_dir():
     return os.environ.get("TMPDIR", "/tmp")
 
 
-def _wait_token(pid, before, timeout=TOKEN_WAIT_SECS):
+def _wait_token(before, timeout=TOKEN_WAIT_SECS):
     deadline = time.time() + timeout
     while time.time() < deadline:
         for path in glob.glob(os.path.join(_token_dir(),
@@ -171,7 +184,7 @@ def launch(profile_id, port=28900, extra_args=()):
         raise EngineDisconnected("spawn: %s" % e)
     log.close()
     try:
-        token = _wait_token(proc.pid, before)
+        token = _wait_token(before)
     except EngineDisconnected:
         if proc.poll() is None:
             proc.kill()
@@ -192,7 +205,6 @@ def launch(profile_id, port=28900, extra_args=()):
                 client.close()
             if reply.get("ok") is True:
                 _register(inst)
-                log.close()
                 return inst
             last = "bad ping reply: %r" % (reply,)
         except EngineDisconnected as e:
@@ -201,7 +213,6 @@ def launch(profile_id, port=28900, extra_args=()):
     if proc.poll() is None:
         proc.kill()
         proc.wait()
-    log.close()
     raise EngineDisconnected(last or "ping failed")
 
 

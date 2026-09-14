@@ -18,6 +18,7 @@ int MCP_Impulse (void);
 void MCP_BeginInput (float fwd, float strafe, float vert, float yawdeg,
 	float pitchdeg, qboolean attack, int jump, int impulse, qboolean run);
 void MCP_EndInput (void);
+void MCP_InputStats (float *yaw, float *pitch);
 
 // Tick notification (q_mcp.c): the host loop calls this once per
 // completed simulation step, frozen steps excluded.
@@ -27,11 +28,19 @@ void MCP_NoteTick (void);
 // world (map, restart, savegame load).
 void MCP_NoteWorldSpawn (void);
 
+// Modal dialogs (q_mcp.c): SCR_ModalMessage brackets its wait loop with
+// these. MCP_ModalOpened returns nonzero when the dialog was entered
+// from an MCP key op and replies needs_input to it; MCP_ModalClosed
+// records the answer in that op's pending receipt.
+int MCP_ModalOpened (char *text);
+void MCP_ModalClosed (qboolean confirmed);
+
 // Vision capture (q_mcp_capture.c) — render-path glReadPixels into a
 // 2-slot ring, served to the deferred observe op.
 typedef struct
 {
 	byte	*data;			// RGB, bottom-up (glReadPixels order)
+	int	bufsize;		// bytes allocated at data
 	int	w, h;
 	int	viewport[4];		// glx, gly, glwidth, glheight
 	int	hud_rect[4];		// hud strip in top-down image coords
@@ -40,6 +49,7 @@ typedef struct
 } mcap_snapshot_t;
 
 void MCAP_Request (unsigned after_frame, double timeout_secs);
+void MCAP_Cancel (void);
 void MCAP_Frame (void);
 qboolean MCAP_Busy (void);
 // 1 = out filled (call MCAP_Release once the blob is sent), 0 = waiting,

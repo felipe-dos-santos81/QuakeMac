@@ -7,8 +7,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
                                 "src"))
 
-from quakemcp.models import (ERROR_CODES, KNOWN_OPS, Observation,
-                             QuakeMCPError, REQUIRED_STATE_KEYS,
+from quakemcp.models import (CONSOLE_COMMANDS, ERROR_CODES, KNOWN_OPS,
+                             Observation, QuakeMCPError, REQUIRED_STATE_KEYS,
                              validate_line)
 
 
@@ -39,9 +39,16 @@ def test_oversize_rejected():
 
 
 def test_known_ops_pass():
-    for op in ("ping", "exec", "cvar"):
+    for op in ("ping", "exec", "cvar", "tail", "status"):
         assert validate_line({"v": 1, "auth": "t", "id": "1",
                               "op": op})["op"] == op
+
+
+def test_impulse_validator_rejects_non_ascii_digits():
+    # str.isdigit() accepts non-ASCII digits like "²"; the validator must
+    # reject them with its frozen code instead of falling through to int()
+    with pytest.raises(ValueError, match="INVALID_CONTEXT"):
+        CONSOLE_COMMANDS["impulse"][1]("\u00b2")
 
 
 def test_observation_requires_identity_keys():

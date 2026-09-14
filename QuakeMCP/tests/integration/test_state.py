@@ -96,13 +96,34 @@ def test_bridge_state():
                     assert k in st, "state missing %s: %r" % (k, st)
                 return st
 
-            op(id="s0", op="exec", text="access_mouseonly 0")
-            op(id="s1", op="exec", text="map start")
+            # every mutation runs under the controller lease; this raw
+            # socket has no server-side keepalive, so the lease must be
+            # beaten while a world loads
+            reply = op(id="a0", op="control", sub="acquire")
+            assert reply["ok"] is True, reply
+            lease = reply["result"]["lease"]
+            epoch = reply["result"]["epoch"]
+            seq = [0]
+
+            def next_seq():
+                seq[0] += 1
+                return str(seq[0])
+
+            def beat():
+                reply = op(id="hb", op="hb", lease=lease, epoch=str(epoch))
+                assert reply["ok"] is True, reply
+
+            def mutate(**kw):
+                return op(lease=lease, epoch=str(epoch), seq=next_seq(), **kw)
+
+            mutate(id="s0", op="exec", text="access_mouseonly 0")
+            mutate(id="s1", op="exec", text="map start")
 
             # gameplay_ready: signon complete, input no longer suppressed,
             # loading plaque gone
             deadline = time.time() + 30
             while time.time() < deadline:
+                beat()
                 st = state()
                 if (st["signon"] == 4 and st["movemessages"] > 2
                         and not st["loading"]):
@@ -119,15 +140,10 @@ def test_bridge_state():
             frame0 = st["frame"]
             gen0 = st["world_gen"]
 
-            reply = op(id="a1", op="control", sub="acquire")
-            assert reply["ok"] is True, reply
-            lease = reply["result"]["lease"]
-            epoch = reply["result"]["epoch"]
-
-            reply = op(id="ac", op="act", lease=lease, epoch=str(epoch),
-                       seq="1", action_id="walk", forward="1", strafe="0",
-                       vertical="0", yaw="0", pitch="0", attack="0",
-                       jump="none", impulse="0", run="0", ticks="24")
+            reply = mutate(id="ac", op="act", action_id="walk", forward="1",
+                           strafe="0", vertical="0", yaw="0", pitch="0",
+                           attack="0", jump="none", impulse="0", run="0",
+                           ticks="24")
             assert reply["ok"] is True, reply
             assert reply["result"]["completed_ticks"] == 24, reply
             assert reply["result"]["interrupted"] is False, reply
@@ -140,9 +156,10 @@ def test_bridge_state():
 
             # a same-map reload is a new world generation
             gen_before = st2["world_gen"]
-            op(id="s2", op="exec", text="map start")
+            mutate(id="s2", op="exec", text="map start")
             deadline = time.time() + 30
             while time.time() < deadline:
+                beat()
                 st3 = state()
                 if st3["world_gen"] > gen_before and st3["signon"] == 4:
                     break

@@ -1,5 +1,5 @@
-"""Task 5: bounded actions, release idempotency, lease expiry. Skips
-without game data."""
+"""Task 5: bounded actions, effective act reporting, release idempotency,
+lease expiry. Skips without game data."""
 import glob
 import json
 import os
@@ -34,12 +34,15 @@ def send_recv(f, obj, timeout=10):
     return json.loads(line.decode())
 
 
-def _act(op, lease, epoch, seq, ticks):
-    """Minimal zero-input ticks act; returns the reply."""
-    return op(id="x", op="act", lease=lease, epoch=str(epoch),
-              seq=str(seq), action_id="", forward="0", strafe="0",
-              vertical="0", yaw="0", pitch="0", attack="0",
-              jump="none", impulse="0", run="0", ticks=str(ticks))
+def _act(op, lease, epoch, seq, ticks, action_id="", **extra):
+    """One act under the controller-lease envelope; returns the reply."""
+    fields = dict(id="x", op="act", lease=lease, epoch=str(epoch),
+                  seq=str(seq), action_id=action_id, forward="0",
+                  strafe="0", vertical="0", yaw="0", pitch="0",
+                  attack="0", jump="none", impulse="0", run="0")
+    fields.update(extra)
+    fields["ticks"] = str(ticks)
+    return op(**fields)
 
 
 def test_bridge_act():
@@ -91,14 +94,37 @@ def test_bridge_act():
                 kw.setdefault("auth", token)
                 return send_recv(f, kw)
 
+            # every mutation runs under the controller lease; this raw
+            # socket has no server-side keepalive, so the lease must be
+            # beaten while a world loads
+            reply = op(id="a0", op="control", sub="acquire")
+            assert reply["ok"] is True, reply
+            lease = reply["result"]["lease"]
+            epoch = reply["result"]["epoch"]
+            seq = [0]
+
+            def next_seq():
+                seq[0] += 1
+                return str(seq[0])
+
+            def beat():
+                reply = op(id="hb", op="hb", lease=lease, epoch=str(epoch))
+                assert reply["ok"] is True, reply
+
+            def mutate(**kw):
+                return op(lease=lease, epoch=str(epoch), seq=next_seq(), **kw)
+
             # deterministic input path + a loaded world (ticks only count
             # once cls.signon == SIGNONS, so a map is required)
-            op(id="s0", op="exec", text="access_mouseonly 0")
-            op(id="s1", op="exec", text="map start")
+            reply = mutate(id="s0", op="exec", text="access_mouseonly 0")
+            assert reply["ok"] is True, reply
+            reply = mutate(id="s1", op="exec", text="map start")
+            assert reply["ok"] is True, reply
 
             deadline = time.time() + 30
             while time.time() < deadline:
-                reply = op(id="w", op="exec", text="status")
+                beat()
+                reply = mutate(id="w", op="exec", text="status")
                 assert reply["ok"] is True, reply
                 if "players" in reply["result"]["output"]:
                     break
@@ -106,17 +132,26 @@ def test_bridge_act():
             else:
                 pytest.fail("map never reached gameplay-ready")
 
-            # acquire the controller lease
-            reply = op(id="a1", op="control", sub="acquire")
-            assert reply["ok"] is True, reply
-            lease = reply["result"]["lease"]
-            epoch = reply["result"]["epoch"]
-
             # 72-tick act: exact completion, no interruption
-            reply = _act(op, lease, epoch, 1, 72)
+            reply = _act(op, lease, epoch, next_seq(), 72)
             assert reply["ok"] is True, reply
             assert reply["result"]["completed_ticks"] == 72, reply
             assert reply["result"]["interrupted"] is False, reply
+
+            # effective reporting: a 200-degree pitch request clamps to
+            # the engine's view limit while yaw is unclamped, and the
+            # weapon reports requested vs active engine truth
+            reply = _act(op, lease, epoch, next_seq(), 1, yaw="30",
+                         pitch="200", impulse="2")
+            assert reply["ok"] is True, reply
+            res = reply["result"]
+            assert res["yaw_applied_deg"] == 30, reply
+            # +200 up pitch clamps to the engine's -70 view limit
+            # (q_mcp_input.c MCP_Move), so exactly 70 degrees apply
+            assert res["pitch_applied_deg"] == pytest.approx(70.0, abs=0.1), \
+                reply
+            assert res["weapon_requested"] == 2, reply
+            assert "weapon_active" in res, reply
 
             # release is idempotent
             r1 = op(id="r1", op="release")

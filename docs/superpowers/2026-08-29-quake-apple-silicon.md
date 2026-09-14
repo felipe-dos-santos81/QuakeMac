@@ -1323,7 +1323,7 @@ Validation: make clean && make build-release build-server build-client
 
 ### QuakeMCP: engine bridge, MCP server, acceptance run (feature)
 Commits: 8a60ea6, 65112a7, fc7f44b, 4101e0c, a849a4b, 5e93f24, 93c61ab,
-9b8e8eb, f3098e6 and the Task 10 fixes. Spec + plan:
+9b8e8eb, f3098e6, 5746b0e, 7a72b19. Spec + plan:
 docs/superpowers/2026-09-13-quakemcp-design.md and
 2026-09-13-quakemcp-plan.md. A 13-tool MCP server
 (QuakeMCP/src/quakemcp) supervises the instrumented glquake
@@ -1349,3 +1349,69 @@ Validation: make clean && make build-release build-server build-client
 (exit 0); make clean && make build-release QUAKE_MCP=1 (exit 0);
 python3 -m pytest QuakeMCP/tests/unit QuakeMCP/tests/contract
 QuakeMCP/tests/integration (42 passed).
+
+### QuakeMCP conformance round (fix)
+Commits: b9d4e93, 7259023, 0cdca1f, 5f3ee67, c5e9f65, 9ad7055, 83d0a5a,
+3f99e16, c28031f, 56c1b9b, 5635ad3, 48120a4, 201e8e5. Spec:
+docs/superpowers/2026-09-14-quakemcp-conformance-design.md. Plan:
+docs/superpowers/2026-09-14-quakemcp-conformance-plan.md.
+One shared mutation envelope on the wire (lease/epoch/seq plus optional
+action_id/world_generation/control_revision) is checked by one bridge
+precondition helper for every mutation (`act`, `exec`, `key`,
+`control mode`, `cvar` set); reads never carry it. New read ops: `tail`
+(console ring, so `exec` is always a mutation) and `status` (bridge
+ledger receipt lookup that survives MCP-server restarts); the wire
+version is read and must equal 1. Every mutation records a hash-keyed
+receipt: a duplicate `(lease, action_id, epoch, args)` replays with
+`"duplicate":true` and is never re-executed, different arguments are
+POLICY_DENIED, and a spent sequence without a surviving receipt is
+RESULT_EXPIRED. The bridge now serves two authenticated connection slots
+(call plus control), so heartbeats and emergency `release` are
+serviceable while an act/observe reply is deferred; EOF on the
+requesting connection finishes its action, and the 2 s lease expiry is
+uniform mid-act. Python tools are async over anyio threads with a shared
+`_mutate` (lazy acquire, server-assigned sequence, `send_retrying` for
+action ids) and a shielded best-effort release on SDK cancellation. A
+per-instance receipt LRU (16 entries / 8 MiB) retains the delivered
+observation, so a retried action id replays its exact frame; an evicted
+entry raises FRAME_EXPIRED instead of re-shooting. `quake_act` reports
+the effective post-clamp view deltas and requested-vs-active weapon. A
+menu confirmation raised by an MCP key now replies `needs_input` with
+the dialog frame; release or lease loss injects the escape a human would
+press and denies the receipt. In stepped sessions, gameplay-class console
+commands run a 250 ms realtime flush so the forwarded command lands;
+`kill` was traced to a level restart in the shipped single-player progs
+and `quake_game respawn` requires `state.dead`, spans the death-think
+window and returns `{respawned, waited_ms}`. Intermission stays recorded
+as an observed FAIL with cause: `svc_intermission` is written only by the
+progs' `execute_changelevel`, which no tool surface reaches. The tool
+surface gains a stepped default on `quake_start` (held-button fallback to
+realtime with reason), `quake_status` capabilities manifest plus action
+query, `save`/`load`/`connect`/`disconnect` removed from the console
+allowlist, and a `gameplay_ready` gate for gameplay commands (`pause 0`
+excepted). Hygiene: reverted the `Quake/host.c` whitespace hunks,
+re-synced `engine-integration.md` hook line numbers and the op map,
+corrected the `#ifdef` wording in `README.md`/`AGENTS.md`, and unified
+the capture structs. Acceptance:
+QuakeMCP/docs/acceptance-results.md (58 unit/contract, 18 integration,
+0 skipped; intermission FAIL with cause; vision with a model
+environment-blocked). Engine tree only; QuakeWorld untouched.
+Validation: make clean && make build-release build-server build-client
+(exit 0); make clean && make build-release QUAKE_MCP=1 (exit 0);
+python3 -m pytest QuakeMCP/tests/unit QuakeMCP/tests/contract -v
+(58 passed); python3 -m pytest QuakeMCP/tests/integration -v (18 passed,
+0 skipped); 3-binary SIGKILL smoke 0 "Received signal" for
+glquake/qwsv/glqwcl; autonomous stdio loop pass (13 tools, frame 32 -> 44
+over a 12-tick act, no orphaned engines).
+Follow-up: 091e0c9 final-review touch-ups (version gate moved below auth
+per design §3.1; KNOWN_OPS gains tail/status; a third-connection test so
+the acceptance citation is test-backed; impulse validator
+ASCII-hardened; act clamp assertion pinned at 70.0 +/- 0.1). Re-verified
+on the tip: 59 unit/contract, 19 integration, 0 skipped.
+Deferred (triaged and accepted at the final whole-branch review; not
+merge blockers): SO_NOSIGPIPE / MCP_Send deadline hardening; shielded
+best-effort mode restore for cancelled world ops; ActOut typing; the
+telemetry-not-hashed replay nuance; a C-side receipt-ring wrap/empty-body
+harness; test_death/test_modal binary-skip guards; KNOWN_OPS `hb`;
+MCP_REPLY_MAX mid-escape truncation; MCP_ReplyMutation escape-buffer
+sizing; the capture/hash module split when q_mcp.c is next touched.

@@ -61,4 +61,24 @@ def test_status_extra_fields_rejected():
 
     tool = _run(main())
     props = tool.inputSchema.get("properties", {})
-    assert set(props) == {"instance"}  # no catch-all field in schema
+    # decision 4: status answers an action query by action_id
+    assert set(props) == {"instance", "action_id"}
+
+
+def test_mutating_tools_expose_envelope():
+    envelope = {"lease", "action_id", "action_seq", "epoch",
+                "world_generation", "control_revision"}
+    mutating = ("quake_act", "quake_config", "quake_console", "quake_control",
+                "quake_game", "quake_ui")
+
+    async def main():
+        async with create_connected_server_and_client_session(mcp) as s:
+            await s.initialize()
+            tools = await s.list_tools()
+            return {t.name: set(t.inputSchema.get("properties", {}))
+                    for t in tools.tools}
+
+    props = _run(main())
+    for name in mutating:
+        missing = envelope - props[name]
+        assert not missing, "%s missing %s" % (name, sorted(missing))

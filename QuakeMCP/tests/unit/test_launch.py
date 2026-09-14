@@ -35,7 +35,7 @@ def test_launch_does_not_inherit_stdio(monkeypatch, tmp_path):
     monkeypatch.setattr(lifecycle.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(lifecycle, "BridgeClient", FakeClient)
     monkeypatch.setattr(lifecycle, "_wait_token",
-                        lambda pid, before: "tok")
+                        lambda before: "tok")
     monkeypatch.setattr(lifecycle.os.path, "exists", lambda p: True)
     monkeypatch.setattr(lifecycle.tempfile, "gettempdir",
                         lambda: str(tmp_path))

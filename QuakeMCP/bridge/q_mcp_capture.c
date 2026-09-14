@@ -26,18 +26,7 @@ of the License, or (at your option) any later version.
 
 #define MCAP_SRC_MAX_BYTES	(32 * 1024 * 1024)
 
-typedef struct
-{
-	byte	*data;			// RGB, bottom-up rows
-	int	bufsize;
-	int	w, h;
-	int	viewport[4];		// glx, gly, glwidth, glheight
-	int	hud_rect[4];		// hud strip in top-down image coords
-	double	captured_at;
-	unsigned frame;
-} mcap_slot_t;
-
-static mcap_slot_t	mcap_ring[2];
+static mcap_snapshot_t	mcap_ring[2];
 static int	mcap_next_slot;
 static int	mcap_pinned;		// slot handed to the sender, -1 none
 
@@ -66,6 +55,21 @@ void MCAP_Request (unsigned after_frame, double timeout_secs)
 
 /*
 ==================
+MCAP_Cancel
+
+Drop an outstanding request or a captured-but-undelivered slot when the
+requesting connection goes away.
+==================
+*/
+void MCAP_Cancel (void)
+{
+	mcap_req_active = false;
+	mcap_pending = -1;
+	mcap_pinned = -1;
+}
+
+/*
+==================
 MCAP_Busy
 
 True while a request is waiting for its frame, a capture awaits its
@@ -89,7 +93,7 @@ after the render, so that id is MCP_FrameId () + 1. Skipped renders
 */
 void MCAP_Frame (void)
 {
-	mcap_slot_t	*s;
+	mcap_snapshot_t	*s;
 	long	bytes;
 	int	slot, x, y, w, h, hudh;
 
@@ -166,7 +170,7 @@ stays pinned until MCAP_Release), 0 while waiting, -1 on the timeout,
 */
 int MCAP_Poll (mcap_snapshot_t *out)
 {
-	mcap_slot_t	*s;
+	mcap_snapshot_t	*s;
 	double		now;
 
 	now = Sys_DoubleTime ();
@@ -187,19 +191,7 @@ int MCAP_Poll (mcap_snapshot_t *out)
 		mcap_pending = -1;
 		mcap_req_active = false;
 
-		out->data = s->data;
-		out->w = s->w;
-		out->h = s->h;
-		out->viewport[0] = s->viewport[0];
-		out->viewport[1] = s->viewport[1];
-		out->viewport[2] = s->viewport[2];
-		out->viewport[3] = s->viewport[3];
-		out->hud_rect[0] = s->hud_rect[0];
-		out->hud_rect[1] = s->hud_rect[1];
-		out->hud_rect[2] = s->hud_rect[2];
-		out->hud_rect[3] = s->hud_rect[3];
-		out->captured_at = s->captured_at;
-		out->frame = s->frame;
+		*out = *s;
 		return 1;
 	}
 
