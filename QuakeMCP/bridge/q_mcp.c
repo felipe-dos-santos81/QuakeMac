@@ -1472,6 +1472,27 @@ static qboolean MCP_CheckSequence (char *line, char *id, int *seq)
 
 /*
 ==================
+MCP_BeginMutation
+
+The shared envelope preamble for every mutation: canonical hash, known
+duplicate, then preconditions. Returns false when a reply has already
+been sent. `act` checks CONTROL_BUSY between this and MCP_CheckSequence;
+every caller checks its sequence next.
+==================
+*/
+static qboolean MCP_BeginMutation (char *op, char *line, char *id,
+	unsigned *hash)
+{
+	*hash = MCP_HashRequest (op, line);
+	if (MCP_LookupReceipt (line, id))
+		return false;
+	if (!MCP_CheckPreconditions (line, id))
+		return false;
+	return true;
+}
+
+/*
+==================
 MCP_GameplayReady
 
 The act gate: a local world must be loaded, past sign-on, past the
@@ -1558,10 +1579,7 @@ static void MCP_HandleLine (char *line)
 				"exec needs text; use tail to read the console");
 			return;
 		}
-		hash = MCP_HashRequest (op, line);
-		if (MCP_LookupReceipt (line, id))
-			return;
-		if (!MCP_CheckPreconditions (line, id))
+		if (!MCP_BeginMutation (op, line, id, &hash))
 			return;
 		if (!MCP_CheckSequence (line, id, &seq))
 			return;
@@ -1587,10 +1605,7 @@ static void MCP_HandleLine (char *line)
 		hasval = MCP_Field (line, "value", value, sizeof (value)) != 0;
 		if (hasval)
 		{
-			hash = MCP_HashRequest (op, line);
-			if (MCP_LookupReceipt (line, id))
-				return;
-			if (!MCP_CheckPreconditions (line, id))
+			if (!MCP_BeginMutation (op, line, id, &hash))
 				return;
 			if (!MCP_CheckSequence (line, id, &seq))
 				return;
@@ -1619,10 +1634,7 @@ static void MCP_HandleLine (char *line)
 	{
 		int	key, down, keyfd;
 
-		hash = MCP_HashRequest (op, line);
-		if (MCP_LookupReceipt (line, id))
-			return;
-		if (!MCP_CheckPreconditions (line, id))
+		if (!MCP_BeginMutation (op, line, id, &hash))
 			return;
 		if (!MCP_CheckSequence (line, id, &seq))
 			return;
@@ -1705,10 +1717,7 @@ static void MCP_HandleLine (char *line)
 		{
 			char mode[32];
 
-			hash = MCP_HashRequest (op, line);
-			if (MCP_LookupReceipt (line, id))
-				return;
-			if (!MCP_CheckPreconditions (line, id))
+			if (!MCP_BeginMutation (op, line, id, &hash))
 				return;
 			if (!MCP_CheckSequence (line, id, &seq))
 				return;
@@ -1893,15 +1902,11 @@ static void MCP_HandleLine (char *line)
 		if (!MCP_Field (line, "action_id", aida, sizeof (aida)))
 			aida[0] = 0;
 
-		hash = MCP_HashRequest (op, line);
-
 		// known duplicate: the same op + lease + action_id + arguments
 		// returns its recorded receipt; different arguments under the
 		// same id are a conflict, never a second execution. Acts with
 		// no action_id carry no identity and are never deduplicated.
-		if (MCP_LookupReceipt (line, id))
-			return;
-		if (!MCP_CheckPreconditions (line, id))
+		if (!MCP_BeginMutation (op, line, id, &hash))
 			return;
 		if (mcp_act_active)
 		{
