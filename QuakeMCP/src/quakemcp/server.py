@@ -46,6 +46,11 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 SAVE_WAIT_SECS = 10.0
 WORLD_WAIT_SECS = 30.0
 
+# Bounds of the per-instance act receipt cache (Task 5): evict-oldest by
+# entry count and by evictable bytes.
+RECEIPT_LIMIT = 16
+RECEIPT_BYTES = 8 * 1024 * 1024
+
 
 def _instance(instance):
     if not instance:
@@ -468,6 +473,56 @@ def _caption(structured):
                        text=json.dumps(structured, sort_keys=True))
 
 
+def _receipt_bytes(entry):
+    """Evictable size of one cached observation: the encoded image bytes
+    plus the serialized structured payload (the two retained result
+    blobs). The report dict and key are bookkeeping."""
+    return len(entry["encoded"]) + len(json.dumps(entry["structured"]))
+
+
+def _receipt_store(inst, action_id, encoded, report, structured):
+    """Remember one delivered act observation under action_id.
+
+    LRU bounded by RECEIPT_LIMIT entries and RECEIPT_BYTES evictable
+    bytes (oldest first), so a retry replays its recorded frame until the
+    entry is gone — then FRAME_EXPIRED, never a re-shoot.
+    """
+    if not action_id:
+        return
+    inst.receipts[action_id] = {"encoded": encoded, "report": report,
+                                "structured": structured}
+    inst.receipts.move_to_end(action_id)
+    while inst.receipts:
+        total = sum(_receipt_bytes(e) for e in inst.receipts.values())
+        if len(inst.receipts) <= RECEIPT_LIMIT and total <= RECEIPT_BYTES:
+            break
+        inst.receipts.popitem(last=False)
+
+
+def _receipt_get(inst, action_id):
+    """The cached observation for action_id, if retained (touches LRU)."""
+    entry = inst.receipts.get(action_id)
+    if entry is not None:
+        inst.receipts.move_to_end(action_id)
+    return entry
+
+
+def _replay(cached):
+    """Rebuild the exact CallToolResult the live path delivered.
+
+    The cached structured content was already telemetry-filtered, so a
+    replay applies no second policy pass; the image block is re-encoded
+    from the recorded bytes, never re-captured.
+    """
+    structured = dict(cached["structured"])
+    return CallToolResult(
+        content=[_image_content(cached["encoded"],
+                                cached["report"]["encoding"]),
+                 _caption(structured)],
+        structuredContent=structured,
+        isError=False)
+
+
 @mcp.tool(annotations=RO_TRUE)
 async def quake_observe(
     instance: str,
@@ -558,7 +613,10 @@ async def quake_act(
     a mismatch is STALE_STATE. With an action_id the engine records a
     receipt, so a dropped connection is retried once and either returns
     that receipt or runs the action exactly once; reusing an action_id
-    with different arguments is POLICY_DENIED.
+    with different arguments is POLICY_DENIED. The result reports the
+    effective post-clamp view deltas and the requested vs active weapon.
+    A retried action_id replays the exact recorded frame; once that frame
+    is evicted the retry is FRAME_EXPIRED, never a re-shoot.
     """
     inst = lifecycle.get(instance)
     if inst is None:
@@ -603,11 +661,23 @@ async def quake_act(
                              epoch=epoch,
                              world_generation=world_generation,
                              control_revision=control_revision, **args)
+        # a bridge duplicate means this action already ran and delivered
+        # a frame: replay the recorded observation, never re-shoot
+        if res.get("duplicate") is True and action_id:
+            cached = _receipt_get(inst, action_id)
+            if cached is None:
+                raise ValueError("FRAME_EXPIRED: %s result frame evicted"
+                                 % action_id)
+            return _replay(cached)
         completed = {
             "action_id": res.get("action_id", action_id),
             "completed_ticks": res.get("completed_ticks"),
             "elapsed_ms": res.get("elapsed_ms"),
             "interrupted": res.get("interrupted"),
+            "yaw_applied_deg": res.get("yaw_applied_deg"),
+            "pitch_applied_deg": res.get("pitch_applied_deg"),
+            "weapon_requested": res.get("weapon_requested"),
+            "weapon_active": res.get("weapon_active"),
         }
         # the action observation must follow the final completed step and
         # its render; a capture failure is surfaced, never fabricated
@@ -615,6 +685,8 @@ async def quake_act(
             _encode_observation, inst, instance, 0, 2000)
     structured.update(completed)
     structured = vision.apply_telemetry(structured, telemetry)
+    if action_id:
+        _receipt_store(inst, action_id, encoded, report, structured)
     return CallToolResult(
         content=[_image_content(encoded, report["encoding"]),
                  _caption(structured)],

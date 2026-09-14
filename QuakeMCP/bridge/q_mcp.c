@@ -90,6 +90,7 @@ static double	mcp_act_start;		// wall clock at act start
 static double	mcp_act_duration;	// seconds requested (MCP_ACT_DURATION)
 static char	mcp_act_id[128];
 static char	mcp_act_aid[128];	// action_id echo
+static int	mcp_act_impulse;	// requested weapon impulse
 static unsigned	mcp_act_hash;		// argument hash for the receipt ring
 
 // Stepped mode (Task 9): when set, _Host_Frame skips the client and
@@ -941,18 +942,25 @@ static void MCP_FinishAct (qboolean interrupted)
 {
 	char result[MCP_REPLY_MAX];
 	char aid[256];
+	float yaw_applied, pitch_applied;
 	int elapsed, savedfd;
 
 	if (!mcp_act_active)
 		return;
 	MCP_Escape (aid, sizeof (aid), mcp_act_aid);
+	// read the applied view before MCP_EndInput neutralizes it
+	MCP_InputStats (&yaw_applied, &pitch_applied);
 	elapsed = (int)((Sys_DoubleTime () - mcp_act_start) * 1000.0);
 	if (elapsed < 0)
 		elapsed = 0;
 	snprintf (result, sizeof (result),
 		"\"completed_ticks\":%d,\"elapsed_ms\":%d,\"interrupted\":%s,"
-		"\"action_id\":\"%s\"",
-		mcp_act_completed, elapsed, interrupted ? "true" : "false", aid);
+		"\"action_id\":\"%s\",\"yaw_applied_deg\":%.2f,"
+		"\"pitch_applied_deg\":%.2f,\"weapon_requested\":%d,"
+		"\"weapon_active\":%d",
+		mcp_act_completed, elapsed, interrupted ? "true" : "false", aid,
+		yaw_applied, pitch_applied, mcp_act_impulse,
+		cl.stats[STAT_ACTIVEWEAPON]);
 
 	// record the receipt before replying: a caller that retries after a
 	// dropped connection gets this result instead of a second execution
@@ -1815,6 +1823,7 @@ static void MCP_HandleLine (char *line)
 		strncpy (mcp_act_aid, aida, sizeof (mcp_act_aid) - 1);
 		mcp_act_aid[sizeof (mcp_act_aid) - 1] = 0;
 		mcp_act_hash = hash;
+		mcp_act_impulse = impulse;
 		mcp_act_start = Sys_DoubleTime ();
 		mcp_act_completed = 0;
 		mcp_lease_seq = seq;

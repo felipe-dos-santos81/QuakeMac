@@ -4,6 +4,7 @@ Profiles are a hardcoded table — never a shell command. Child
 stdout/stderr go to the platform temp dir, never the repo. The token
 is read from the bridge's private file, never CLI or logs.
 """
+import collections
 import glob
 import os
 import subprocess
@@ -54,6 +55,10 @@ class Instance:
         self.lease = ""
         self.epoch = 0
         self.next_seq = 0
+        # delivered act observations keyed by action_id (Task 5); the
+        # bridge ledger replays a duplicate's metadata, this replays its
+        # frame
+        self.receipts = collections.OrderedDict()
 
     def client(self):
         return BridgeClient("127.0.0.1", self.port, self.token)

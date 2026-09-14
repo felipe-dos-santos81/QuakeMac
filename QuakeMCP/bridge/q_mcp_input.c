@@ -29,6 +29,8 @@ static float	mcp_vertical;		// -1..1
 static qboolean	mcp_run;		// +speed hold
 static float	mcp_yaw_delta;		// degrees, +right
 static float	mcp_pitch_delta;	// degrees, +up
+static float	mcp_yaw_applied;	// post-clamp delta MCP_Move applied
+static float	mcp_pitch_applied;	// post-clamp delta MCP_Move applied
 static qboolean	mcp_attack;		// hold
 static int	mcp_jump;		// 0 none, 1 tap (one frame), 2 hold
 static int	mcp_impulse;		// one-shot, cleared on read
@@ -59,6 +61,8 @@ void MCP_BeginInput (float fwd, float strafe, float vert,
 	mcp_run = run;
 	mcp_yaw_delta = yawdeg;
 	mcp_pitch_delta = pitchdeg;
+	mcp_yaw_applied = 0;
+	mcp_pitch_applied = 0;
 	mcp_attack = attack;
 	mcp_jump = jump;
 	mcp_impulse = impulse;
@@ -82,9 +86,28 @@ void MCP_EndInput (void)
 	mcp_run = false;
 	mcp_yaw_delta = 0;
 	mcp_pitch_delta = 0;
+	mcp_yaw_applied = 0;
+	mcp_pitch_applied = 0;
 	mcp_attack = false;
 	mcp_jump = 0;
 	mcp_impulse = 0;
+}
+
+/*
+==================
+MCP_InputStats
+
+The post-clamp view deltas the action's MCP_Move actually applied, in
+input degrees (+right / +up). Zero until the first move applies them and
+again after MCP_EndInput neutralizes the input.
+==================
+*/
+void MCP_InputStats (float *yaw, float *pitch)
+{
+	if (yaw)
+		*yaw = mcp_yaw_applied;
+	if (pitch)
+		*pitch = mcp_pitch_applied;
 }
 
 /*
@@ -101,19 +124,26 @@ merged input.
 */
 int MCP_Move (usercmd_t *cmd)
 {
+	float	pre_pitch;
+
 	if (!mcp_input_active)
 		return 0;
 
 	if (mcp_apply_view)
 	{
 		cl.viewangles[YAW] -= mcp_yaw_delta;
+		mcp_yaw_applied = mcp_yaw_delta;
 		// engine pitch is positive-down: +up input subtracts
 		cl.viewangles[PITCH] -= mcp_pitch_delta;
 		// engine view limits: pitch +80/-70, roll cleared
+		pre_pitch = cl.viewangles[PITCH];
 		if (cl.viewangles[PITCH] > 80)
 			cl.viewangles[PITCH] = 80;
 		if (cl.viewangles[PITCH] < -70)
 			cl.viewangles[PITCH] = -70;
+		// requested minus the clamp excess, back in +up input degrees
+		mcp_pitch_applied = mcp_pitch_delta
+			- (cl.viewangles[PITCH] - pre_pitch);
 		cl.viewangles[ROLL] = 0;
 		mcp_apply_view = false;
 	}

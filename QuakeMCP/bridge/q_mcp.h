@@ -18,6 +18,7 @@ int MCP_Impulse (void);
 void MCP_BeginInput (float fwd, float strafe, float vert, float yawdeg,
 	float pitchdeg, qboolean attack, int jump, int impulse, qboolean run);
 void MCP_EndInput (void);
+void MCP_InputStats (float *yaw, float *pitch);
 
 // Tick notification (q_mcp.c): the host loop calls this once per
 // completed simulation step, frozen steps excluded.
