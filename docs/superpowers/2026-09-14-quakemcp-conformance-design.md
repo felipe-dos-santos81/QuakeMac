@@ -30,8 +30,7 @@ Two items surfaced while writing this specification (neither was a review
 finding); both are load-bearing for cancellation and are included:
 
 1. the endpoint serves one client, so `release`/heartbeat cannot be serviced
-   while an action reply is deferred — §3.4 bounds this with concurrent
-   request slots;
+   while an action reply is deferred — §3.4 adds one control connection;
 2. `exec` doubles as the console-tail read — replaced by a read-only `tail` op
    so `exec` can be uniformly lease-protected (§3.1).
 
@@ -94,15 +93,17 @@ tool:
 
 Reads bypass `_mutate` and stay responsive.
 
-### 3.4 Concurrent request slots (amends the plan's "single client")
+### 3.4 A second connection slot (amends the plan's "single client")
 
-The endpoint accepts and drains a small bounded set of concurrent request
-connections (proposed 4, each with its own line buffer; extra connections are
-closed as today). Rationale: design §6 requires emergency release to be
+The endpoint accepts and drains two concurrent request connections: the
+long-lived call connection and one control connection. Both are
+token-authenticated, both may carry any op, and each deferred reply (act,
+observe) is sent to the connection that requested it. Third connections are
+closed as today. Rationale: design §6 requires emergency release to be
 serviced within ~100 ms while the engine is responsive, and cancellation must
 cancel a running action — both are impossible when the in-flight request owns
-the only connection. Bounded slots also let heartbeats land during deferred
-replies and long polls.
+the only connection. The control connection also lets heartbeats land during
+deferred replies and long polls.
 
 Consequences:
 
@@ -111,9 +112,11 @@ Consequences:
   at the 5 s cap.
 - The server's 500 ms keepalive keeps a legitimate action's lease alive;
   `hb` never fails merely because a reply is deferred.
+- EOF on the connection that owns a pending deferred reply cancels that
+  action (and a pending observe is dropped), per §6's EOF invalidation.
 - Mutations stay serialized by the lease, not by the socket model.
 - Connection count is a security-relevant surface: loopback bind, token auth
-  per connection, a fixed cap, and a fixed line-size bound per slot.
+  per connection, a fixed cap of two, and a fixed line-size bound per slot.
 
 ## 4. Tool surface
 
