@@ -17,8 +17,8 @@ PORT = 29879
 TOKEN_DIR = os.environ.get("TMPDIR", "/tmp")
 
 STATE_KEYS = ("epoch", "world_gen", "control_rev", "frame", "time", "map",
-              "pos", "angles", "health", "ammo", "ui", "loading", "dead",
-              "intermission", "signon", "movemessages")
+              "mode", "pos", "angles", "health", "ammo", "ui", "loading",
+              "dead", "intermission", "signon", "movemessages")
 
 
 def send_recv(f, obj, timeout=10):

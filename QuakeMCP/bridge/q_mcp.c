@@ -112,11 +112,9 @@ typedef struct
 static mcp_ledger_t mcp_ledger[MCP_LEDGER_SIZE];
 static int	mcp_ledger_next;
 
-// World generation (Task 6): bumped from MCP_Poll by watching for a
-// spawn (map name change or sv.time reset), no extra engine hooks.
+// World generation (Task 6, exact since Task 10): MCP_NoteWorldSpawn
+// is called from SV_SpawnServer.
 static int	mcp_world_gen;
-static char	mcp_last_map[64];
-static double	mcp_last_svtime;
 
 // Deferred observation reply (Task 7): observe arms MCAP_* and the reply
 // is sent from MCP_Poll once the frame is captured.
@@ -575,6 +573,7 @@ static int MCP_FormatState (char *out, int outsize)
 	n = snprintf (out, outsize,
 		"\"epoch\":%d,\"world_gen\":%d,\"control_rev\":%d,"
 		"\"frame\":%u,\"time\":%.3f,\"map\":\"%s\","
+		"\"mode\":\"%s\","
 		"\"pos\":[%.2f,%.2f,%.2f],"
 		"\"angles\":[%.2f,%.2f,%.2f],"
 		"\"health\":%d,\"ammo\":%d,\"ui\":%d,"
@@ -582,6 +581,7 @@ static int MCP_FormatState (char *out, int outsize)
 		"\"signon\":%d,\"movemessages\":%d",
 		mcp_epoch, mcp_world_gen, mcp_control_rev,
 		MCP_FrameId (), host_time, escmap,
+		mcp_step_mode ? "stepped" : "realtime",
 		org[0], org[1], org[2], ang[0], ang[1], ang[2],
 		health, ammo, (int)key_dest,
 		scr_disabled_for_loading ? "true" : "false",
@@ -727,6 +727,8 @@ static void MCP_FinishAct (qboolean interrupted)
 	MCP_Reply (mcp_act_id, true, NULL, result);
 	MCP_EndInput ();
 	mcp_act_active = 0;
+	// the deferred reply is how a long action proved it was alive
+	mcp_lease_lastbeat = Sys_DoubleTime ();
 }
 
 /*
@@ -825,23 +827,16 @@ static void MCP_CheckAction (void)
 
 /*
 ==================
-MCP_UpdateWorldGen
+MCP_NoteWorldSpawn
 
-Bump the world generation when a new world becomes active. SV_SpawnServer
-resets sv.time to 1.0 and sets sv.name, so either a backwards jump in
-sv.time (same-map reload/restart) or a map-name change is a new world.
-The observed name/time are refreshed every poll, so ordinary play-time
-growth is never mistaken for a spawn. Runs in MCP_Poll only; no engine
-hooks.
+Called from SV_SpawnServer (the server owns the world lifecycle), so the
+generation is exact for map changes, restarts and savegame loads alike.
+A same-map same-time reload that a name/time poll cannot see still bumps.
 ==================
 */
-static void MCP_UpdateWorldGen (void)
+void MCP_NoteWorldSpawn (void)
 {
-	if (strcmp (sv.name, mcp_last_map) != 0 || sv.time < mcp_last_svtime)
-		mcp_world_gen++;
-	strncpy (mcp_last_map, sv.name, sizeof (mcp_last_map) - 1);
-	mcp_last_map[sizeof (mcp_last_map) - 1] = 0;
-	mcp_last_svtime = sv.time;
+	mcp_world_gen++;
 }
 
 /*
@@ -855,6 +850,11 @@ clears MCP input so no synthetic button survives a dead controller.
 static void MCP_CheckLease (void)
 {
 	if (!mcp_lease_active)
+		return;
+	// an action in flight is activity: its own wall cap bounds it, and
+	// its completion refreshes the lease (the client cannot heartbeat
+	// while the reply is deferred)
+	if (mcp_act_active)
 		return;
 	if (Sys_DoubleTime () - mcp_lease_lastbeat > MCP_LEASE_TIMEOUT)
 		MCP_ClearControl ();
@@ -1040,6 +1040,27 @@ static void MCP_HandleLine (char *line)
 
 	if (!strcmp (op, "hb"))
 	{
+		char hleas[64], hepocs[32];
+
+		// a beat must name the live lease: it may not resurrect a
+		// revoked one or keep a foreign controller alive
+		if (!mcp_lease_active || mcp_lease_id[0] == 0)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "no lease");
+			return;
+		}
+		if (!MCP_Field (line, "lease", hleas, sizeof (hleas))
+			|| strcmp (hleas, mcp_lease_id) != 0)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "lease mismatch");
+			return;
+		}
+		if (MCP_Field (line, "epoch", hepocs, sizeof (hepocs))
+			&& atoi (hepocs) != mcp_epoch)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "epoch mismatch");
+			return;
+		}
 		mcp_lease_lastbeat = Sys_DoubleTime ();
 		MCP_Reply (id, true, NULL, "\"ok\":true");
 		return;
@@ -1344,8 +1365,6 @@ void MCP_Init (void)
 	mcp_lease_lastbeat = 0;
 	mcp_act_active = 0;
 	mcp_world_gen = 0;
-	mcp_last_map[0] = 0;
-	mcp_last_svtime = 0;
 	mcp_observe_id[0] = 0;
 	MCAP_Shutdown ();	// normalize capture ring/statics
 }
@@ -1367,7 +1386,6 @@ void MCP_Poll (void)
 	if (!mcp_enabled.value)
 		return;
 
-	MCP_UpdateWorldGen ();
 	MCP_CheckAction ();
 	MCP_CheckLease ();
 

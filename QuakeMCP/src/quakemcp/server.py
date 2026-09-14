@@ -543,8 +543,8 @@ def quake_act(
 
     client = inst.client()
     try:
-        # lazy acquire keeps the vertical slice self-contained until
-        # quake_control lands in Task 8
+        # actions may run on a caller-held lease or lazily acquire one;
+        # either way the server beats it while it is in use
         if not lease or not epoch:
             reply = client.send("control", sub="acquire")
             if reply.get("ok") is not True:
@@ -554,6 +554,7 @@ def quake_act(
             res = reply.get("result", {})
             lease = res.get("lease", "")
             epoch = res.get("epoch", 0)
+            inst.keepalive(lease, epoch)
             if action_seq <= 0:
                 action_seq = 1  # first action on the fresh lease
         kw = {
@@ -591,9 +592,11 @@ def quake_act(
         client.close()
 
     if reply.get("ok") is not True:
-        raise ValueError("%s: %s" % (
-            reply.get("error", "ENGINE_DISCONNECTED"),
-            reply.get("detail", "")))
+        code = reply.get("error", "ENGINE_DISCONNECTED")
+        if code == "STALE_STATE":
+            # the lease is gone; stop beating a dead id
+            inst.stop_keepalive()
+        raise ValueError("%s: %s" % (code, reply.get("detail", "")))
     res = reply.get("result", {})
     completed = {
         "action_id": res.get("action_id", action_id),
@@ -659,9 +662,22 @@ def quake_game(instance: str, operation: str, map_id: str = "",
 
 
 def _world_op(inst, operation, command):
-    before = _state(inst)["world_gen"]
-    _bridge_ok(inst, "exec", text=command)
-    st = _wait_world(inst, before)
+    """Run a world-mutating op with the simulation clock running.
+
+    A stepped session holds the clock while idle, so a map/restart/load
+    would never finish sign-on and the op would time out. The session's
+    mode is restored afterwards when it was stepped before.
+    """
+    stepped = _state(inst).get("mode") == "stepped"
+    if stepped:
+        _bridge_ok(inst, "control", sub="mode", mode="realtime")
+    try:
+        before = _state(inst)["world_gen"]
+        _bridge_ok(inst, "exec", text=command)
+        st = _wait_world(inst, before)
+    finally:
+        if stepped:
+            _bridge_ok(inst, "control", sub="mode", mode="stepped")
     return {"operation": operation, "world_gen": st["world_gen"],
             "frame": st["frame"], "map": st["map"], "gameplay_ready": True}
 
@@ -796,6 +812,13 @@ def quake_control(instance: str, operation: str = "acquire",
     inst = _instance(instance)
     if operation in ("acquire", "release", "detach"):
         res = _bridge_ok(inst, "control", sub=operation)
+        if operation == "acquire":
+            # the server owns the lease while the caller holds it: beat
+            # every 500 ms so tool calls longer than the 2 s expiry
+            # (image encoding, world loads) do not lose control
+            inst.keepalive(res.get("lease", ""), res.get("epoch", 0))
+        else:
+            inst.stop_keepalive()
         out = {"operation": operation}
         for k in ("lease", "epoch", "control_rev", "released"):
             if k in res:

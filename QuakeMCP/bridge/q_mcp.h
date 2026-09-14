@@ -23,6 +23,10 @@ void MCP_EndInput (void);
 // completed simulation step, frozen steps excluded.
 void MCP_NoteTick (void);
 
+// World generation (q_mcp.c): SV_SpawnServer calls this for every new
+// world (map, restart, savegame load).
+void MCP_NoteWorldSpawn (void);
+
 // Vision capture (q_mcp_capture.c) — render-path glReadPixels into a
 // 2-slot ring, served to the deferred observe op.
 typedef struct

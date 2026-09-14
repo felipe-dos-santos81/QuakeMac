@@ -120,6 +120,11 @@ def test_stepped_mode():
             else:
                 pytest.fail("map never reached gameplay-ready")
 
+            # a beat must name the live lease
+            reply = op(id="hb0", op="hb", lease="l0-0", epoch="0")
+            assert reply["ok"] is False, reply
+            assert reply["error"] == "STALE_STATE", reply
+
             reply = op(id="a1", op="control", sub="acquire")
             assert reply["ok"] is True, reply
             lease = reply["result"]["lease"]
@@ -145,7 +150,9 @@ def test_stepped_mode():
             assert reply["result"]["completed_ticks"] == 10, reply
             assert reply["result"]["interrupted"] is False, reply
 
-            op(id="hb", op="hb")
+            reply = op(id="hb", op="hb", lease=lease,
+                        epoch=str(epoch))
+            assert reply["ok"] is True, reply
             c = state()
             assert c["frame"] == a["frame"] + 10, (a, c)
             assert 0.0 < c["time"] - a["time"] < 0.6, (a, c)
@@ -164,7 +171,9 @@ def test_stepped_mode():
             assert reply["ok"] is False, reply
             assert reply["error"] == "POLICY_DENIED", reply
 
-            op(id="hb", op="hb")
+            reply = op(id="hb", op="hb", lease=lease,
+                        epoch=str(epoch))
+            assert reply["ok"] is True, reply
             # stale world generation is refused before execution
             reply = _act(op, lease, epoch, 2, 4, action_id="a2",
                          world_generation=str(a["world_gen"] + 999))
@@ -182,7 +191,9 @@ def test_stepped_mode():
             reply = op(id="m2", op="control", sub="mode", mode="realtime")
             assert reply["ok"] is True, reply
             assert reply["result"]["mode"] == "realtime", reply
-            op(id="hb", op="hb")
+            reply = op(id="hb", op="hb", lease=lease,
+                        epoch=str(epoch))
+            assert reply["ok"] is True, reply
             e = state()
             time.sleep(0.4)
             g = state()
@@ -235,6 +246,10 @@ def test_stepped_tools():
                 assert not r.isError, text(r)
                 ctl = json.loads(text(r))
                 lease, epoch = ctl["lease"], ctl["epoch"]
+
+                # the server beats the caller's lease: a quiet stretch
+                # longer than the bridge's 2 s expiry keeps control
+                time.sleep(2.5)
 
                 r = await s.call_tool("quake_state", {"instance": inst})
                 a = json.loads(text(r))

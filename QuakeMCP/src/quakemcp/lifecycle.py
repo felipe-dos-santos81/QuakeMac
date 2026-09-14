@@ -8,6 +8,7 @@ import glob
 import os
 import subprocess
 import tempfile
+import threading
 import time
 
 from .engine import BridgeClient
@@ -15,6 +16,7 @@ from .models import EngineDisconnected, QuakeMCPError
 
 TOKEN_WAIT_SECS = 10.0
 PING_RETRIES = 3
+HEARTBEAT_SECS = 0.5
 
 
 def _repo_root():
@@ -43,6 +45,8 @@ class Instance:
         self.owned = owned
         self.profile_id = profile_id
         self._proc = proc
+        self._hb_stop = None
+        self._hb_thread = None
 
     def client(self):
         return BridgeClient("127.0.0.1", self.port, self.token)
@@ -54,7 +58,41 @@ class Instance:
             return None
         return os.path.join(_repo_root(), profile["basedir"])
 
+    def keepalive(self, lease, epoch):
+        """Beat the controller lease from the server side.
+
+        The bridge expires a lease after 2 s of silence; the design calls
+        for a beat every 500 ms. A tool call can legitimately outlast
+        that window (world loads, image encoding), so the beat runs on a
+        daemon thread with its own short-lived connection.
+        """
+        self.stop_keepalive()
+        stop = threading.Event()
+        self._hb_stop = stop
+
+        def beat():
+            while not stop.wait(HEARTBEAT_SECS):
+                try:
+                    client = self.client()
+                except (EngineDisconnected, OSError):
+                    continue
+                try:
+                    client.send("hb", lease=lease, epoch=str(epoch))
+                except (EngineDisconnected, OSError):
+                    pass
+                finally:
+                    client.close()
+
+        self._hb_thread = threading.Thread(target=beat, daemon=True)
+        self._hb_thread.start()
+
+    def stop_keepalive(self):
+        if self._hb_stop is not None:
+            self._hb_stop.set()
+            self._hb_stop = None
+
     def stop(self):
+        self.stop_keepalive()
         if not self.owned:
             raise QuakeMCPError("POLICY_DENIED",
                                 "attached instance: refuse to terminate")
@@ -123,17 +161,21 @@ def launch(profile_id, port=28900, extra_args=()):
     args = [exe] + list(profile["args"]) + ["-mcp_port", str(port),
                                             "+mcp_enabled", "1"] + list(extra_args)
     try:
-        proc = subprocess.Popen(args, stdout=log, stderr=log, cwd=root)
+        # stdin must not be inherited: over stdio transport it is the
+        # control channel, and a game child holding it steals requests
+        # or EOFs the session
+        proc = subprocess.Popen(args, stdin=subprocess.DEVNULL,
+                                stdout=log, stderr=log, cwd=root)
     except OSError as e:
         log.close()
         raise EngineDisconnected("spawn: %s" % e)
+    log.close()
     try:
         token = _wait_token(proc.pid, before)
     except EngineDisconnected:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-        log.close()
         raise
     instance_id = "q%d" % _next_id[0]
     _next_id[0] += 1

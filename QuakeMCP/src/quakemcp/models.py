@@ -31,6 +31,7 @@ REQUIRED_STATE_KEYS = (
     "frame",
     "time",
     "map",
+    "mode",
     "pos",
     "health",
     "ammo",
@@ -54,6 +55,7 @@ STATE_KEYS = (
     "frame",
     "time",
     "map",
+    "mode",
     "pos",
     "angles",
     "health",
@@ -77,6 +79,7 @@ class StateRequired(TypedDict):
     frame: int
     time: float
     map: str
+    mode: str
     pos: list
     angles: list
     ui: int
