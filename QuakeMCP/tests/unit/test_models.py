@@ -75,3 +75,17 @@ def test_tool_error_carries_code():
     assert e.code == "POLICY_DENIED"
     with pytest.raises(ValueError):
         QuakeMCPError("NOPE", "x")
+
+
+def test_state_schema_sources_agree():
+    from quakemcp import models
+
+    # the observation tuple is the bridge snapshot minus angles, plus
+    # the server-side instance id
+    assert models.REQUIRED_STATE_KEYS == ("instance",) + tuple(
+        k for k in models.STATE_KEYS if k != "angles")
+
+    survival = set(models.StateRequired.__annotations__)
+    hud = {"health", "ammo", "dead"}
+    assert survival == (set(models.REQUIRED_STATE_KEYS) - hud) | {"angles"}
+    assert set(models.StateOut.__annotations__) == survival | hud

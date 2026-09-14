@@ -25,26 +25,6 @@ ERROR_CODES = (
     "POLICY_DENIED",
 )
 
-REQUIRED_STATE_KEYS = (
-    "instance",
-    "epoch",
-    "world_gen",
-    "control_rev",
-    "frame",
-    "time",
-    "map",
-    "mode",
-    "pos",
-    "health",
-    "ammo",
-    "ui",
-    "loading",
-    "dead",
-    "intermission",
-    "signon",
-    "movemessages",
-)
-
 # Identity keys are the minimum an Observation must carry; the full
 # state group is frozen in Task 6 (state op).
 REQUIRED_IDENTITY_KEYS = ("instance", "epoch", "frame")
@@ -69,6 +49,12 @@ STATE_KEYS = (
     "signon",
     "movemessages",
 )
+
+# The observation's required keys: the bridge snapshot minus the angles
+# holdback, plus the server-side instance id. Deriving from STATE_KEYS
+# keeps the three schema statements in step (unit-tested below).
+REQUIRED_STATE_KEYS = ("instance",) + tuple(
+    k for k in STATE_KEYS if k != "angles")
 
 
 class StateRequired(TypedDict):
