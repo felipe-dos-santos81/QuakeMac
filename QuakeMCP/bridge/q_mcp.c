@@ -90,9 +90,7 @@ static double	mcp_act_start;		// wall clock at act start
 static double	mcp_act_duration;	// seconds requested (MCP_ACT_DURATION)
 static char	mcp_act_id[128];
 static char	mcp_act_aid[128];	// action_id echo
-static char	mcp_act_lease[64];	// lease the action was admitted on
 static unsigned	mcp_act_hash;		// argument hash for the receipt ring
-static int	mcp_act_epoch;
 
 // Stepped mode (Task 9): when set, _Host_Frame skips the client and
 // server simulation steps while no action runs, so an idle owned session
@@ -107,17 +105,19 @@ static int	mcp_step_mode;
 static unsigned	mcp_sim_frame;
 
 // Receipt ring (Task 9), bounded so the module never grows. A repeated
-// (lease, action_id, epoch) with the same argument hash returns its
+// (op, lease, action_id, epoch) with the same argument hash returns its
 // recorded receipt; a different hash is refused. With 64 slots, a client
 // that echoes action ids across a long session can still outrun it: the
 // miss then surfaces as RESULT_EXPIRED via the sequence high-water.
 #define MCP_LEDGER_SIZE 64
 typedef struct
 {
+	char		op[16];
 	char		lease[64];
 	char		action_id[128];
 	int		epoch;
 	unsigned	hash;
+	char		state[16];	// "done" | "pending" | "denied"
 	char		result[MCP_REPLY_MAX];
 } mcp_ledger_t;
 
@@ -512,6 +512,28 @@ static int MCP_Field (char *line, char *name, char *out, int outsize)
 
 /*
 ==================
+MCP_FieldRawInt
+
+Read an unquoted numeric top-level field (the wire's "v").
+==================
+*/
+static int MCP_FieldRawInt (char *line, char *name)
+{
+	char	pat[32];
+	char	*p;
+
+	snprintf (pat, sizeof (pat), "\"%s\":", name);
+	p = strstr (line, pat);
+	if (!p)
+		return -1;
+	p += strlen (pat);
+	while (*p == ' ' || *p == '\t')
+		p++;
+	return atoi (p);
+}
+
+/*
+==================
 MCP_Escape
 
 JSON-escape src into dst (quotes, backslash, control chars).
@@ -654,6 +676,23 @@ static void MCP_Reply (char *id, qboolean ok, char *error, char *result)
 			"{\"v\":1,\"id\":\"%s\",\"ok\":false,\"error\":\"%s\",\"detail\":\"%s\"}\n",
 			idbuf, error, result);
 	MCP_Send (out);
+}
+
+/*
+==================
+MCP_FormatTail
+
+Write the escaped console tail as a result body (no outer braces):
+shared by the tail op, the read half of exec and the exec receipt.
+==================
+*/
+static void MCP_FormatTail (char *out, int outsize)
+{
+	char tail[8192], esctail[8192 * 2];
+
+	MCP_ConsoleTail (tail, sizeof (tail));
+	MCP_Escape (esctail, sizeof (esctail), tail);
+	snprintf (out, outsize, "\"output\":\"%s\"", esctail);
 }
 
 /*
@@ -830,6 +869,67 @@ static void MCP_SendObservation (mcap_snapshot_t *snap)
 
 /*
 ==================
+MCP_RecordReceipt
+
+Write the next ring entry, bound to the lease and epoch live at call
+time. An empty action id has no identity and is never recorded.
+==================
+*/
+static void MCP_RecordReceipt (char *op, char *aid, unsigned hash,
+	char *state, char *result)
+{
+	mcp_ledger_t *e;
+
+	if (!aid[0])
+		return;
+	e = &mcp_ledger[mcp_ledger_next];
+	mcp_ledger_next = (mcp_ledger_next + 1) % MCP_LEDGER_SIZE;
+	strncpy (e->op, op, sizeof (e->op) - 1);
+	e->op[sizeof (e->op) - 1] = 0;
+	strncpy (e->lease, mcp_lease_id, sizeof (e->lease) - 1);
+	e->lease[sizeof (e->lease) - 1] = 0;
+	strncpy (e->action_id, aid, sizeof (e->action_id) - 1);
+	e->action_id[sizeof (e->action_id) - 1] = 0;
+	e->epoch = mcp_epoch;
+	e->hash = hash;
+	strncpy (e->state, state, sizeof (e->state) - 1);
+	e->state[sizeof (e->state) - 1] = 0;
+	strncpy (e->result, result, sizeof (e->result) - 1);
+	e->result[sizeof (e->result) - 1] = 0;
+}
+
+/*
+==================
+MCP_ReplyMutation
+
+Uniform completion for a synchronous mutation: echo the action id into
+the result body (a receipt must identify itself), record the receipt,
+reply.
+==================
+*/
+static void MCP_ReplyMutation (char *line, char *id, char *op, unsigned hash,
+	char *result)
+{
+	char aid[128], esc[256], body[MCP_REPLY_MAX];
+	int n;
+
+	if (!MCP_Field (line, "action_id", aid, sizeof (aid)))
+		aid[0] = 0;
+	if (aid[0])
+	{
+		MCP_Escape (esc, sizeof (esc), aid);
+		n = strlen (result);
+		snprintf (body, sizeof (body), "%s%s\"action_id\":\"%s\"",
+			result, n ? "," : "", esc);
+	}
+	else
+		snprintf (body, sizeof (body), "%s", result);
+	MCP_RecordReceipt (op, aid, hash, "done", body);
+	MCP_Reply (id, true, NULL, body);
+}
+
+/*
+==================
 MCP_FinishAct
 
 Send the running action's completion reply and neutralize MCP input.
@@ -856,20 +956,7 @@ static void MCP_FinishAct (qboolean interrupted)
 
 	// record the receipt before replying: a caller that retries after a
 	// dropped connection gets this result instead of a second execution
-	if (mcp_act_aid[0])
-	{
-		mcp_ledger_t *e = &mcp_ledger[mcp_ledger_next];
-
-		mcp_ledger_next = (mcp_ledger_next + 1) % MCP_LEDGER_SIZE;
-		strncpy (e->lease, mcp_act_lease, sizeof (e->lease) - 1);
-		e->lease[sizeof (e->lease) - 1] = 0;
-		strncpy (e->action_id, mcp_act_aid, sizeof (e->action_id) - 1);
-		e->action_id[sizeof (e->action_id) - 1] = 0;
-		e->epoch = mcp_act_epoch;
-		e->hash = mcp_act_hash;
-		strncpy (e->result, result, sizeof (e->result) - 1);
-		e->result[sizeof (e->result) - 1] = 0;
-	}
+	MCP_RecordReceipt ("act", mcp_act_aid, mcp_act_hash, "done", result);
 
 	// the deferred reply targets the connection that armed the act; the
 	// caller's own reply target (an enclosing handler) is restored
@@ -920,30 +1007,202 @@ void MCP_NoteTick (void)
 
 /*
 ==================
-MCP_HashAct
+MCP_HashRequest
 
-FNV-1a over the canonical argument values of an act request (never the
-wire id, sequence or lease, which vary between a call and its retry).
+FNV-1a over the op name and every top-level request field except the
+envelope and identity fields (v, auth, id, lease, epoch, seq, action_id,
+world_generation, control_revision). Only those may vary between a
+mutation and its retry, so only they stay out of the hash; every
+argument decides the identity. Values are hashed as they appear on the
+wire, so a retry repeats them exactly.
 ==================
 */
-static unsigned MCP_HashAct (float fwd, float strafe, float vert, float yaw,
-	float pitch, int run, int attack, int jump, int impulse,
-	int has_ticks, int ticks, int dur)
+static unsigned MCP_HashRequest (char *op, char *line)
 {
-	unsigned h = 2166136261u;
-	char buf[256];
-	char *p;
+	static const char *envelope[] = {
+		"v", "auth", "id", "lease", "epoch", "seq",
+		"action_id", "world_generation", "control_revision", NULL
+	};
+	char key[64];
+	char *p, *q;
+	unsigned h;
+	int depth, i, n, skip;
 
-	snprintf (buf, sizeof (buf),
-		"%.3f|%.3f|%.3f|%.3f|%.3f|%d|%d|%d|%d|%d|%d|%d",
-		fwd, strafe, vert, yaw, pitch, run, attack, jump, impulse,
-		has_ticks, ticks, dur);
-	for (p = buf; *p; p++)
+	h = 2166136261u;
+	for (q = op; *q; q++)
 	{
-		h ^= (unsigned char)*p;
+		h ^= (unsigned char)*q;
 		h *= 16777619u;
 	}
+
+	p = line;
+	if (*p == '{')
+		p++;
+	depth = 0;
+	while (*p)
+	{
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p != '"')
+		{
+			if (*p == '{' || *p == '[')
+				depth++;
+			else if (*p == '}' || *p == ']')
+			{
+				if (depth == 0)
+					break;
+				depth--;
+			}
+			p++;
+			continue;
+		}
+	// one top-level key
+		q = p + 1;
+		n = 0;
+		while (*q && *q != '"')
+		{
+			if (*q == '\\' && q[1])
+				q++;
+			if (n + 1 < (int)sizeof (key))
+				key[n++] = *q;
+			q++;
+		}
+		key[n] = 0;
+		if (*q == '"')
+			q++;
+		if (depth > 0)
+		{
+			p = q;
+			continue;
+		}
+		p = strchr (q, ':');
+		if (!p)
+			break;
+		p++;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		skip = false;
+		for (i = 0; envelope[i]; i++)
+		{
+			if (!strcmp (key, envelope[i]))
+			{
+				skip = true;
+				break;
+			}
+		}
+		if (!skip)
+		{
+			for (q = key; *q; q++)
+			{
+				h ^= (unsigned char)*q;
+				h *= 16777619u;
+			}
+			h ^= '=';
+			h *= 16777619u;
+		}
+		if (*p == '"')
+		{
+		// quoted value: hash the wire bytes, escapes included
+			for (p++; *p && *p != '"'; p++)
+			{
+				if (!skip)
+				{
+					h ^= (unsigned char)*p;
+					h *= 16777619u;
+				}
+				if (*p == '\\' && p[1])
+				{
+					p++;
+					if (!skip)
+					{
+						h ^= (unsigned char)*p;
+						h *= 16777619u;
+					}
+				}
+			}
+			if (*p == '"')
+				p++;
+		}
+		else
+		{
+		// raw value (number, bool, null, nested): hash to the member end
+			int d = 0;
+
+			while (*p)
+			{
+				if (*p == '{' || *p == '[')
+					d++;
+				else if (*p == '}' || *p == ']')
+				{
+					if (d == 0)
+						break;
+					d--;
+				}
+				else if (*p == ',' && d == 0)
+					break;
+				if (!skip)
+				{
+					h ^= (unsigned char)*p;
+					h *= 16777619u;
+				}
+				p++;
+			}
+		}
+	}
 	return h;
+}
+
+/*
+==================
+MCP_LookupReceipt
+
+Duplicate detection for a mutation: a matching (op, lease, action_id,
+epoch) with the same argument hash replies with the recorded result
+marked "duplicate"; the same identity with different arguments is
+refused, never executed twice. Returns true when a reply was sent.
+==================
+*/
+static qboolean MCP_LookupReceipt (char *line, char *id)
+{
+	char op[64], aid[128], leas[64], epocs[32];
+	char body[MCP_REPLY_MAX];
+	unsigned hash;
+	int i;
+
+	if (!MCP_Field (line, "action_id", aid, sizeof (aid)) || !aid[0])
+		return false;
+	if (!MCP_Field (line, "op", op, sizeof (op)))
+		return false;
+	leas[0] = 0;
+	epocs[0] = 0;
+	MCP_Field (line, "lease", leas, sizeof (leas));
+	MCP_Field (line, "epoch", epocs, sizeof (epocs));
+	hash = MCP_HashRequest (op, line);
+	for (i = 0; i < MCP_LEDGER_SIZE; i++)
+	{
+		mcp_ledger_t *e = &mcp_ledger[i];
+
+		if (e->action_id[0] == 0
+			|| strcmp (e->op, op) != 0
+			|| strcmp (e->action_id, aid) != 0
+			|| strcmp (e->lease, leas) != 0
+			|| e->epoch != atoi (epocs))
+			continue;
+		if (e->hash == hash)
+		{
+			if (e->result[0])
+				snprintf (body, sizeof (body),
+					"\"duplicate\":true,%s", e->result);
+			else
+				strcpy (body, "\"duplicate\":true");
+			MCP_Reply (id, true, NULL, body);
+		}
+		else
+			MCP_Reply (id, false, "POLICY_DENIED",
+				"action_id reused with different arguments");
+		return true;
+	}
+	return false;
 }
 
 /*
@@ -1012,6 +1271,82 @@ static void MCP_CheckLease (void)
 
 /*
 ==================
+MCP_CheckPreconditions
+
+The shared mutation gate: live lease, matching lease id and epoch, and
+the world/control generations when the caller pinned them. Replies and
+returns false on the first failure.
+==================
+*/
+static qboolean MCP_CheckPreconditions (char *line, char *id)
+{
+	char leas[64] = { 0 }, epocs[32] = { 0 };
+	char worlds[32] = { 0 }, ctrls[32] = { 0 };
+
+	if (!mcp_lease_active || mcp_lease_id[0] == 0)
+	{
+		MCP_Reply (id, false, "STALE_STATE", "no lease");
+		return false;
+	}
+	if (!MCP_Field (line, "lease", leas, sizeof (leas))
+		|| strcmp (leas, mcp_lease_id) != 0)
+	{
+		MCP_Reply (id, false, "STALE_STATE", "lease mismatch");
+		return false;
+	}
+	if (!MCP_Field (line, "epoch", epocs, sizeof (epocs))
+		|| atoi (epocs) != mcp_epoch)
+	{
+		MCP_Reply (id, false, "STALE_STATE", "epoch mismatch");
+		return false;
+	}
+	if (MCP_Field (line, "world_generation", worlds, sizeof (worlds))
+		&& atoi (worlds) != mcp_world_gen)
+	{
+		MCP_Reply (id, false, "STALE_STATE",
+			"world generation mismatch");
+		return false;
+	}
+	if (MCP_Field (line, "control_revision", ctrls, sizeof (ctrls))
+		&& atoi (ctrls) != mcp_control_rev)
+	{
+		MCP_Reply (id, false, "STALE_STATE",
+			"control revision mismatch");
+		return false;
+	}
+	return true;
+}
+
+/*
+==================
+MCP_CheckSequence
+
+The lease sequence high-water: a spent sequence whose receipt did not
+surface above must never execute again. The caller consumes the
+sequence once the mutation actually runs.
+==================
+*/
+static qboolean MCP_CheckSequence (char *line, char *id, int *seq)
+{
+	char seqs[32];
+
+	if (!MCP_Field (line, "seq", seqs, sizeof (seqs)))
+	{
+		MCP_Reply (id, false, "INVALID_CONTEXT", "mutation needs seq");
+		return false;
+	}
+	*seq = atoi (seqs);
+	if (*seq <= mcp_lease_seq)
+	{
+		MCP_Reply (id, false, "RESULT_EXPIRED",
+			"sequence already consumed");
+		return false;
+	}
+	return true;
+}
+
+/*
+==================
 MCP_HandleLine
 
 exec: Cbuf_AddText (newline appended if missing); oversize 4 KiB
@@ -1027,13 +1362,21 @@ static void MCP_HandleLine (char *line)
 	char auth[128], id[128], op[64];
 	char text[MCP_EXEC_MAX + 1];
 	char name[128], value[1024];
-	char tail[8192], esctail[8192 * 2], result[MCP_REPLY_MAX];
+	char result[MCP_REPLY_MAX];
 	char escval[2048];
 	cvar_t *var;
-	int r;
+	unsigned hash = 0;
+	int r, seq = 0;
 
 	if (!MCP_Field (line, "id", id, sizeof (id)))
 		strcpy (id, "");
+	// the wire protocol is v1; additions are additive fields only
+	if (MCP_FieldRawInt (line, "v") != 1)
+	{
+		MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY",
+			"protocol version");
+		return;
+	}
 	if (!MCP_Field (line, "auth", auth, sizeof (auth))
 		|| strcmp (auth, mcp_token) != 0)
 	{
@@ -1052,35 +1395,65 @@ static void MCP_HandleLine (char *line)
 		return;
 	}
 
+	if (!strcmp (op, "tail"))
+	{
+		MCP_FormatTail (result, sizeof (result));
+		MCP_Reply (id, true, NULL, result);
+		return;
+	}
+
 	if (!strcmp (op, "exec"))
 	{
 		r = MCP_Field (line, "text", text, sizeof (text));
-		if (r == 0)
-		{
-			MCP_Reply (id, false, "INVALID_CONTEXT", "exec needs text");
-			return;
-		}
 		if (r < 0)
 		{
 			MCP_Reply (id, false, "POLICY_DENIED", "exec text over 4 KiB");
 			return;
 		}
+		if (r == 0 || text[0] == 0)
+		{
+			// no text mutates nothing: this stays a read until the
+			// tail op replaces the old exec text="" idiom
+			MCP_FormatTail (result, sizeof (result));
+			MCP_Reply (id, true, NULL, result);
+			return;
+		}
+		hash = MCP_HashRequest (op, line);
+		if (MCP_LookupReceipt (line, id))
+			return;
+		if (!MCP_CheckPreconditions (line, id))
+			return;
+		if (!MCP_CheckSequence (line, id, &seq))
+			return;
 		Cbuf_AddText (text);
-		if (text[0] && text[strlen (text) - 1] != '\n')
+		if (text[strlen (text) - 1] != '\n')
 			Cbuf_AddText ("\n");
-		MCP_ConsoleTail (tail, sizeof (tail));
-		MCP_Escape (esctail, sizeof (esctail), tail);
-		snprintf (result, sizeof (result), "\"output\":\"%s\"", esctail);
-		MCP_Reply (id, true, NULL, result);
+		mcp_lease_seq = seq;
+		MCP_FormatTail (result, sizeof (result));
+		MCP_ReplyMutation (line, id, op, hash, result);
 		return;
 	}
 
 	if (!strcmp (op, "cvar"))
 	{
+		int hasval;
+
 		if (!MCP_Field (line, "name", name, sizeof (name)))
 		{
 			MCP_Reply (id, false, "INVALID_CONTEXT", "cvar needs name");
 			return;
+		}
+		// a value makes this a mutation; without one it is a read
+		hasval = MCP_Field (line, "value", value, sizeof (value)) != 0;
+		if (hasval)
+		{
+			hash = MCP_HashRequest (op, line);
+			if (MCP_LookupReceipt (line, id))
+				return;
+			if (!MCP_CheckPreconditions (line, id))
+				return;
+			if (!MCP_CheckSequence (line, id, &seq))
+				return;
 		}
 		var = Cvar_FindVar (name);
 		if (!var)
@@ -1088,11 +1461,17 @@ static void MCP_HandleLine (char *line)
 			MCP_Reply (id, false, "INVALID_CONTEXT", name);
 			return;
 		}
-		if (MCP_Field (line, "value", value, sizeof (value)))
+		if (hasval)
+		{
 			Cvar_Set (name, value);
+			mcp_lease_seq = seq;
+		}
 		MCP_Escape (escval, sizeof (escval), var->string);
 		snprintf (result, sizeof (result), "\"value\":\"%s\"", escval);
-		MCP_Reply (id, true, NULL, result);
+		if (hasval)
+			MCP_ReplyMutation (line, id, op, hash, result);
+		else
+			MCP_Reply (id, true, NULL, result);
 		return;
 	}
 
@@ -1100,6 +1479,13 @@ static void MCP_HandleLine (char *line)
 	{
 		int	key, down;
 
+		hash = MCP_HashRequest (op, line);
+		if (MCP_LookupReceipt (line, id))
+			return;
+		if (!MCP_CheckPreconditions (line, id))
+			return;
+		if (!MCP_CheckSequence (line, id, &seq))
+			return;
 		key = MCP_FieldInt (line, "key");
 		down = MCP_FieldInt (line, "down");
 		if (key < 0 || key > 255)
@@ -1109,7 +1495,8 @@ static void MCP_HandleLine (char *line)
 		}
 		// routes through the normal UI path (key_dest decides who sees it)
 		Key_Event (key, down ? true : false);
-		MCP_Reply (id, true, NULL, "\"ok\":true");
+		mcp_lease_seq = seq;
+		MCP_ReplyMutation (line, id, op, hash, "\"ok\":true");
 		return;
 	}
 
@@ -1157,6 +1544,13 @@ static void MCP_HandleLine (char *line)
 		{
 			char mode[32];
 
+			hash = MCP_HashRequest (op, line);
+			if (MCP_LookupReceipt (line, id))
+				return;
+			if (!MCP_CheckPreconditions (line, id))
+				return;
+			if (!MCP_CheckSequence (line, id, &seq))
+				return;
 			if (!MCP_Field (line, "mode", mode, sizeof (mode)))
 			{
 				MCP_Reply (id, false, "INVALID_CONTEXT",
@@ -1172,9 +1566,10 @@ static void MCP_HandleLine (char *line)
 				MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY", mode);
 				return;
 			}
+			mcp_lease_seq = seq;
 			snprintf (result, sizeof (result), "\"mode\":\"%s\"",
 				mcp_step_mode ? "stepped" : "realtime");
-			MCP_Reply (id, true, NULL, result);
+			MCP_ReplyMutation (line, id, op, hash, result);
 			return;
 		}
 		MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY", sub);
@@ -1227,6 +1622,43 @@ static void MCP_HandleLine (char *line)
 		return;
 	}
 
+	if (!strcmp (op, "status"))
+	{
+		char want[128] = { 0 };
+		char body[MCP_REPLY_MAX];
+		mcp_ledger_t *e = NULL;
+		int back;
+
+		// with an action id, the newest receipt for the current epoch
+		// (held under any lease); without one, the newest receipt
+		MCP_Field (line, "action_id", want, sizeof (want));
+		for (back = 0; back < MCP_LEDGER_SIZE && !e; back++)
+		{
+			mcp_ledger_t *c = &mcp_ledger[(mcp_ledger_next - 1 - back
+				+ 2 * MCP_LEDGER_SIZE) % MCP_LEDGER_SIZE];
+
+			if (c->action_id[0] == 0)
+				continue;
+			if (want[0] && (strcmp (c->action_id, want) != 0
+				|| c->epoch != mcp_epoch))
+				continue;
+			e = c;
+		}
+		if (!e)
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "no receipt");
+			return;
+		}
+		if (e->result[0])
+			snprintf (body, sizeof (body), "%s,\"state\":\"%s\"",
+				e->result, e->state);
+		else
+			snprintf (body, sizeof (body), "\"state\":\"%s\"",
+				e->state);
+		MCP_Reply (id, true, NULL, body);
+		return;
+	}
+
 	if (!strcmp (op, "observe"))
 	{
 		int after, tmo;
@@ -1252,32 +1684,22 @@ static void MCP_HandleLine (char *line)
 
 	if (!strcmp (op, "act"))
 	{
-		char leas[64], aida[128], seqs[32], epocs[32];
-		char tickss[32], durs[32], worlds[32], ctrls[32];
+		char aida[128], epocs[32];
+		char tickss[32], durs[32];
 		char jumps[16];
-		int epoch, seq, ticks, dur;
+		int ticks, dur;
 		int has_ticks, has_dur, jump, impulse, run, attack;
-		unsigned hash;
-		int i;
 		float fwd, strafe, vert, yaw, pitch;
 
 		// parse every argument before deciding anything: duplicate
 		// detection needs the full argument hash, and it runs before
 		// the state preconditions so a legitimate retry still gets the
 		// receipt after its lease or world moved on
-		MCP_Field (line, "lease", leas, sizeof (leas));
 		if (!MCP_Field (line, "epoch", epocs, sizeof (epocs)))
 		{
 			MCP_Reply (id, false, "INVALID_CONTEXT", "act needs epoch");
 			return;
 		}
-		epoch = atoi (epocs);
-		if (!MCP_Field (line, "seq", seqs, sizeof (seqs)))
-		{
-			MCP_Reply (id, false, "INVALID_CONTEXT", "act needs seq");
-			return;
-		}
-		seq = atoi (seqs);
 		has_ticks = MCP_Field (line, "ticks", tickss, sizeof (tickss)) > 0;
 		has_dur = MCP_Field (line, "duration_ms", durs,
 			sizeof (durs)) > 0;
@@ -1309,77 +1731,24 @@ static void MCP_HandleLine (char *line)
 		if (!MCP_Field (line, "action_id", aida, sizeof (aida)))
 			aida[0] = 0;
 
-		hash = MCP_HashAct (fwd, strafe, vert, yaw, pitch, run, attack,
-			jump, impulse, has_ticks, ticks, dur);
+		hash = MCP_HashRequest (op, line);
 
-		// known duplicate: the same lease + action_id + arguments
+		// known duplicate: the same op + lease + action_id + arguments
 		// returns its recorded receipt; different arguments under the
 		// same id are a conflict, never a second execution. Acts with
 		// no action_id carry no identity and are never deduplicated.
-		if (aida[0])
-		{
-			for (i = 0; i < MCP_LEDGER_SIZE; i++)
-			{
-				mcp_ledger_t *e = &mcp_ledger[i];
-
-				if (e->action_id[0] == 0 || e->epoch != epoch
-					|| strcmp (e->action_id, aida) != 0
-					|| strcmp (e->lease, leas) != 0)
-					continue;
-				if (e->hash == hash)
-				{
-					MCP_Reply (id, true, NULL, e->result);
-					return;
-				}
-				MCP_Reply (id, false, "POLICY_DENIED",
-					"action_id reused with different arguments");
-				return;
-			}
-		}
-
-		if (!mcp_lease_active || mcp_lease_id[0] == 0)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "no lease");
+		if (MCP_LookupReceipt (line, id))
 			return;
-		}
-		if (strcmp (leas, mcp_lease_id) != 0)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "lease mismatch");
+		if (!MCP_CheckPreconditions (line, id))
 			return;
-		}
-		if (epoch != mcp_epoch)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "epoch mismatch");
-			return;
-		}
-		if (MCP_Field (line, "world_generation", worlds, sizeof (worlds))
-			&& atoi (worlds) != mcp_world_gen)
-		{
-			MCP_Reply (id, false, "STALE_STATE",
-				"world generation mismatch");
-			return;
-		}
-		if (MCP_Field (line, "control_revision", ctrls, sizeof (ctrls))
-			&& atoi (ctrls) != mcp_control_rev)
-		{
-			MCP_Reply (id, false, "STALE_STATE",
-				"control revision mismatch");
-			return;
-		}
 		if (mcp_act_active)
 		{
 			MCP_Reply (id, false, "CONTROL_BUSY",
 				"action already running");
 			return;
 		}
-		if (seq <= mcp_lease_seq)
-		{
-			// the sequence is spent and no receipt survived in the
-			// ring: the original result can no longer be returned
-			MCP_Reply (id, false, "RESULT_EXPIRED",
-				"sequence already consumed");
+		if (!MCP_CheckSequence (line, id, &seq))
 			return;
-		}
 
 		if (has_ticks)
 		{
@@ -1418,10 +1787,7 @@ static void MCP_HandleLine (char *line)
 		strcpy (mcp_act_id, id);
 		strncpy (mcp_act_aid, aida, sizeof (mcp_act_aid) - 1);
 		mcp_act_aid[sizeof (mcp_act_aid) - 1] = 0;
-		strncpy (mcp_act_lease, leas, sizeof (mcp_act_lease) - 1);
-		mcp_act_lease[sizeof (mcp_act_lease) - 1] = 0;
 		mcp_act_hash = hash;
-		mcp_act_epoch = epoch;
 		mcp_act_start = Sys_DoubleTime ();
 		mcp_act_completed = 0;
 		mcp_lease_seq = seq;

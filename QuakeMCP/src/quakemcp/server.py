@@ -228,8 +228,8 @@ def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
 
 
 def _tail(inst):
-    """Current console tail (exec with an empty line)."""
-    return _bridge_ok(inst, "exec", text="").get("output", "")
+    """Current console tail (read-only bridge op)."""
+    return _bridge_ok(inst, "tail").get("output", "")
 
 
 def _state(inst):
