@@ -1415,3 +1415,71 @@ telemetry-not-hashed replay nuance; a C-side receipt-ring wrap/empty-body
 harness; test_death/test_modal binary-skip guards; KNOWN_OPS `hb`;
 MCP_REPLY_MAX mid-escape truncation; MCP_ReplyMutation escape-buffer
 sizing; the capture/hash module split when q_mcp.c is next touched.
+
+### QuakeMCP review-fixes round (fix)
+Commits: 61b4d2f, 472bb3f, 5f39bd1, 8ef4bc2, 6e5f0dd, 182340a, ac36f6c,
+6d34845, dae22f8, 669c748, 319574d, cb0bc97, e0e0eb0, d8aa7a6, 55f70dd,
+and this docs commit. Spec:
+docs/superpowers/2026-09-14-quakemcp-review-fixes-design.md. Plan:
+docs/superpowers/2026-09-14-quakemcp-review-fixes-plan.md.
+All fourteen findings of the two-axis review of the conformance round
+were resolved without a wire change (no version bump, new error codes,
+new tools or schema shapes).
+
+Behavior and protocol: the impulse merge no longer assigns `in_impulse`
+— it composes the serialized byte, lets a pending human impulse win its
+frame and reads the MCP one-shot only when it can be sent, so a
+collision defers instead of dropping (reasoned, not test-drivable;
+recorded as such). `exec` is always a mutation: missing or empty text
+replies `INVALID_CONTEXT`, and `tail` is the only console read. Vision
+errors carry `"<CODE>: detail"` prefixes, and the capabilities manifest
+advertises `ui.keys` equal to the enforced `KEY_CODES` table. New human
+takeover control: `q_mcp_ui.c` draws `MCP CONTROL - LEFT-CLICK TO STOP`
+while a lease is held, and a left-click swallows itself and revokes the
+lease through the existing revoke path (neutral input, pending modal
+denied); the server's heartbeat now inspects its reply, stops beating
+and clears the local lease on `STALE_STATE`, generation-guarded so a
+late beat cannot touch a newer lease.
+
+Refactors: `Instance.clear_lease()` (one lease drop),
+`_observation_result()` (one observation shape), `MCP_BeginMutation()`
+(one mutation preamble), shared `_instance()` and exception folding,
+`REQUIRED_STATE_KEYS` derived from `STATE_KEYS`, and one JSON member
+scanner behind `MCP_Field`/`MCP_HashRequest`. S7 (the envelope six-field
+data clump) accepted with rationale, no code: the six fields are the
+flat wire contract MCP client schemas must expose, and `_mutate` /
+`MCP_BeginMutation` already centralize their handling; an internal
+Envelope type would be constructed from the same six parameters per tool
+and change nothing a client sees.
+
+Docs and drifts: the acceptance matrix is re-mapped to the 09-13 §9
+gates with the UI-reachability and failure-cleanup rows restored (P3);
+Task 6 drift recorded — `MCP_NoteWorldSpawn` in `SV_SpawnServer`
+replaced the planned `sv.name` poll because same-map same-time reloads
+are invisible to a name poll (the note landed in
+`2026-09-13-quakemcp-plan.md` Task 6 rather than the conformance plan
+file the round plan named); two plan-fact corrections recorded (Task 9's
+RED test passed pre-change by fact, discrimination by mutation; Task
+11's exec-tail asserts moved to a polled `tail` because the exec reply
+predates `Cbuf_Execute`).
+
+Validation at d8aa7a6: both clean gates exit 0 (`make clean && make
+build-release build-server build-client`; `make clean && make
+build-release QUAKE_MCP=1`); `python3 -m pytest QuakeMCP/tests/unit
+QuakeMCP/tests/contract -v` -> 65 passed (45 unit + 20 contract; +6
+unit); `python3 -m pytest QuakeMCP/tests/integration -v` -> 22 passed,
+0 skipped (+3); 3-binary SIGKILL smoke 0 "Received signal" for
+glquake/qwsv/glqwcl. Acceptance: QuakeMCP/docs/acceptance-results.md.
+The manual physical-takeover protocol is documented there with every
+observed-result field marked pending human execution; the follow-up
+commit records them. Honest negatives unchanged: intermission FAIL with
+cause, vision ENVIRONMENT-BLOCKED, water PARTIAL, cancellation PARTIAL.
+Engine tree only; QuakeWorld untouched.
+
+Deferred (triaged and accepted at the conformance final review; not
+merge blockers): SO_NOSIGPIPE / MCP_Send deadline hardening; shielded
+best-effort mode restore for cancelled world ops; ActOut typing; the
+telemetry-not-hashed replay nuance; a C-side receipt-ring wrap/empty-body
+harness; test_death/test_modal binary-skip guards; KNOWN_OPS `hb`;
+MCP_REPLY_MAX mid-escape truncation; MCP_ReplyMutation escape-buffer
+sizing; the capture/hash module split when q_mcp.c is next touched.
