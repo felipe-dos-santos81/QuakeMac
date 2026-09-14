@@ -116,7 +116,27 @@ def test_bridge_observe():
                 assert len(blob) == res["src_w"] * res["src_h"] * 3, res
                 return res, blob
 
-            op(id="s0", op="exec", text="access_mouseonly 0")
+            # every mutation runs under the controller lease; this raw
+            # socket has no server-side keepalive, so the lease must be
+            # beaten while a world loads
+            reply, _ = op(id="a0", op="control", sub="acquire")
+            assert reply["ok"] is True, reply
+            lease = reply["result"]["lease"]
+            epoch = reply["result"]["epoch"]
+            seq = [0]
+
+            def next_seq():
+                seq[0] += 1
+                return str(seq[0])
+
+            def beat():
+                reply, _ = op(id="hb", op="hb", lease=lease, epoch=str(epoch))
+                assert reply["ok"] is True, reply
+
+            def mutate(**kw):
+                return op(lease=lease, epoch=str(epoch), seq=next_seq(), **kw)
+
+            mutate(id="s0", op="exec", text="access_mouseonly 0")
 
             # a frame before any map: the renderer always composes
             res, blob = observe()
@@ -128,12 +148,15 @@ def test_bridge_observe():
             assert res["frame"] > 0, res
             assert isinstance(res["capture_age_ms"], int), res
 
-            op(id="s1", op="exec", text="map start")
+            mutate(id="s1", op="exec", text="map start")
             deadline = time.time() + 30
             while time.time() < deadline:
+                beat()
                 reply, _ = op(id="st", op="state")
                 assert reply["ok"] is True, reply
-                if reply["result"]["signon"] == 4:
+                st = reply["result"]
+                if (st["signon"] == 4 and st["movemessages"] > 2
+                        and not st["loading"]):
                     break
                 time.sleep(0.25)
             else:
@@ -151,15 +174,10 @@ def test_bridge_observe():
             delta = reply["result"]["frame"] - frame1
             assert 0 <= delta <= 5, (reply["result"], frame1)
 
-            reply, _ = op(id="c1", op="control", sub="acquire")
-            assert reply["ok"] is True, reply
-            lease = reply["result"]["lease"]
-            epoch = reply["result"]["epoch"]
-
-            reply, _ = op(id="ac", op="act", lease=lease, epoch=str(epoch),
-                          seq="1", action_id="look", forward="1", strafe="0",
-                          vertical="0", yaw="30", pitch="0", attack="0",
-                          jump="none", impulse="0", run="0", ticks="12")
+            reply, _ = mutate(id="ac", op="act", action_id="look", forward="1",
+                              strafe="0", vertical="0", yaw="30", pitch="0",
+                              attack="0", jump="none", impulse="0", run="0",
+                              ticks="12")
             assert reply["ok"] is True, reply
             assert reply["result"]["completed_ticks"] == 12, reply
 

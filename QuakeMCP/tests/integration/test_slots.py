@@ -72,9 +72,11 @@ def test_control_connection_during_deferred_act():
             res = _recv(a[1])["result"]
             lease, epoch = res["lease"], res["epoch"]
             # act defers its reply; keep the request connection open
+            # slot/lease mechanics, not admission: respawn relaxes the gate
             _send(a[1], {"v": 1, "auth": token, "id": "2", "op": "act",
                          "lease": lease, "epoch": str(epoch),
-                         "seq": "1", "forward": "1", "ticks": "72"})
+                         "seq": "1", "forward": "1", "ticks": "72",
+                         "respawn": "1"})
             # the control connection must still answer while the act runs
             _send(b[1], {"v": 1, "auth": token, "id": "3", "op": "state"})
             assert _recv(b[1])["ok"] is True
@@ -100,10 +102,11 @@ def test_eof_mid_act_finishes_action():
         res = _recv(a[1])["result"]
         lease, epoch = res["lease"], res["epoch"]
         # arm a deferred act, then drop the connection that asked for it
+        # slot/lease mechanics, not admission: respawn relaxes the gate
         _send(a[1], {"v": 1, "auth": token, "id": "2", "op": "act",
                      "lease": lease, "epoch": str(epoch),
                      "seq": "1", "forward": "1", "ticks": "72",
-                     "action_id": "eof1"})
+                     "respawn": "1", "action_id": "eof1"})
         a[1].close()
         a[0].close()
         # EOF finishes the act and records the receipt; by the time the
@@ -111,10 +114,11 @@ def test_eof_mid_act_finishes_action():
         time.sleep(2.7)
         b = _client(token)
         try:
+            # the retry repeats every hashed argument, respawn included
             _send(b[1], {"v": 1, "auth": token, "id": "3", "op": "act",
                          "lease": lease, "epoch": str(epoch),
                          "seq": "2", "forward": "1", "ticks": "72",
-                         "action_id": "eof1"})
+                         "respawn": "1", "action_id": "eof1"})
             reply = _recv(b[1])
             assert reply["ok"] is True, reply
             assert reply["result"]["interrupted"] is True, reply
@@ -136,8 +140,7 @@ def test_lease_expiry_after_silence():
             # hb names and checks the lease, so a dead lease must surface
             # here as STALE_STATE
             _send(a[1], {"v": 1, "auth": token, "id": "2", "op": "hb",
-                         "lease": res["lease"],
-                         "epoch": str(res["epoch"]), "seq": "1"})
+                         "lease": res["lease"], "epoch": str(res["epoch"])})
             assert _recv(a[1])["error"] == "STALE_STATE"
         finally:
             a[0].close()
