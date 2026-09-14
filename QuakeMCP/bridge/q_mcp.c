@@ -1554,10 +1554,8 @@ static void MCP_HandleLine (char *line)
 		}
 		if (r == 0 || text[0] == 0)
 		{
-			// no text mutates nothing: this stays a read until the
-			// tail op replaces the old exec text="" idiom
-			MCP_FormatTail (result, sizeof (result));
-			MCP_Reply (id, true, NULL, result);
+			MCP_Reply (id, false, "INVALID_CONTEXT",
+				"exec needs text; use tail to read the console");
 			return;
 		}
 		hash = MCP_HashRequest (op, line);

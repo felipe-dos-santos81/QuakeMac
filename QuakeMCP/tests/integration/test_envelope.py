@@ -177,3 +177,20 @@ def test_protocol_version_gate(bridge):
     reply = bridge.op(id="11", op="ping", v=2)
     assert reply["ok"] is False, reply
     assert reply["error"] == "UNSUPPORTED_CAPABILITY", reply
+
+
+def test_exec_text_is_required(bridge):
+    lease, epoch = bridge.acquire()
+    env = {"lease": lease, "epoch": str(epoch)}
+
+    empty = bridge.op(id="1", op="exec", text="", seq="1", **env)
+    assert empty["ok"] is False, empty
+    assert empty["error"] == "INVALID_CONTEXT", empty
+
+    missing = bridge.op(id="2", op="exec", seq="2", **env)
+    assert missing["ok"] is False, missing
+    assert missing["error"] == "INVALID_CONTEXT", missing
+
+    # validation precedes the envelope: neither rejection spent seq 1
+    ok = bridge.op(id="3", op="exec", text="god", seq="1", **env)
+    assert ok["ok"] is True, ok
