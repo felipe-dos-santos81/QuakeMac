@@ -249,8 +249,8 @@ UI_CONTEXTS = {"game": 0, "console": 1, "message": 2, "menu": 3}
 
 # Static capability manifest: what this server and bridge actually
 # support. `tools` mirrors the registered tool surface; keep it in step
-# with server.py. `respawn` is deliberately absent: its semantics are
-# unverified (UNSUPPORTED_CAPABILITY).
+# with server.py. `respawn` is listed once its death-flow semantics were
+# traced (Task 7: attack tap from a dead player, bounded).
 CAPABILITIES = {
     "tools": [
         "quake_act", "quake_attach", "quake_config", "quake_console",
@@ -268,7 +268,7 @@ CAPABILITIES = {
     "telemetry": ["hud", "pixels_only"],
     "console": sorted(CONSOLE_COMMANDS),
     "game": ["new_game", "restart", "load_map", "save", "load",
-             "list_maps", "list_saves"],
+             "list_maps", "list_saves", "respawn"],
 }
 
 

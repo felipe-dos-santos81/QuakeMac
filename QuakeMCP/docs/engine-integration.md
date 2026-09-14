@@ -115,11 +115,35 @@ access-module behavior when `access_mouseonly` is 0.
 | `list_maps` | — | DOES NOT EXIST — sidecar gamedir inventory |
 | `list_saves` | — | DOES NOT EXIST — sidecar gamedir inventory |
 
-## Death/respawn flow — UNVERIFIED
+## Death/respawn flow (observed 2026-09-14)
 
-Death/respawn semantics (`kill`, death state, respawn path) are marked
-**UNVERIFIED**. Task 8 must verify actual engine behavior before the
-`respawn` op is specified. Do not assume `kill` + respawn round-trips.
+Traced on the MCP build with a live controller lease against the retail id1
+data (engine log under `$TMPDIR/quakemcp-logs/`; raw captures in the Task 7
+report). The suspected mechanism was half right: a stepped session queues
+the forwarded command, but a realtime kill does **not** leave a corpse —
+the shipped progs restart the level.
+
+| Mode | Command (`exec`) | Observed health / dead | Tail / other |
+|---|---|---|---|
+| realtime | `kill` | 100 / false at +0.0 s; 0 / true at +0.026 s (restart sign-on); 100 / false at +0.080 s | engine log `player suicides` then `SpawnServer: start`; `world_gen` +1, `movemessages` reset |
+| stepped | `kill` | unchanged for 1 s (frame/time/movemessages frozen) | forwarded command queues; after a 0.25 s realtime window: same as realtime, `world_gen` +1, mode restored to stepped (3/3 runs settled) |
+| realtime | `pause 1` | alive | tail `player paused the game` — forwarding itself works |
+| realtime | `map end` | -1..-3 / true, stable over 30 s | tail `Shub-Niggurath's Pit`, `player was fed to the Rotfish`; `intermission` stays false |
+| realtime, dead | `act attack=1` | 100 / false | `world_gen` +1, `movemessages` reset — single-player respawn restarts the level |
+
+Progs evidence (disassembly of `game/id1/pak0.pak` `progs/progs.dat`):
+`respawn`'s single-player branch is `localcmd ("restart\n")`;
+`PlayerDeathThink` needs a tick with all buttons released
+(`deadflag = DEAD_RESPAWNABLE`) before an attack tap calls `respawn()`.
+`svc_intermission` is written by the QC `execute_changelevel` (a level-exit
+path) — no console command reaches it, so `map end` cannot show
+intermission.
+
+`quake_game respawn` is the attack tap above: `NOT_READY` unless
+`state.dead`; it runs the clock, settles one buttons-released window, taps
+attack across a death think (`attack=1, ticks=8, respawn=1`, the bridge
+relaxing its readiness gate for that flag), and repeats until alive or the
+bounds pass, returning `{respawned, waited_ms}`.
 
 ## Capability matrix (as measured, 2026-09-14)
 
@@ -130,7 +154,7 @@ Death/respawn semantics (`kill`, death state, respawn path) are marked
 | Axes/turn signs | bridge merge | Forward/right/up positive; positive yaw turns right (`viewangles[YAW] -= delta`); positive pitch looks up (`viewangles[PITCH] -= delta`, engine pitch is positive-down). |
 | Weapon switching | `quake_act weapon_id` | `impulse 1..8`; observed `impulse 1` switching to the axe (current-ammo stat 25 -> 0). |
 | UI keys/text | `quake_ui` | Engine `Key_Event(int, qboolean)` with the fork's key codes; escape opens/closes the menu (state `ui` 0 -> 3 -> 0) and the menu frame is delivered as an image. Text types printable ASCII into a live console/chat field only, never submits. |
-| Console | `quake_console` | Allowlisted commands with typed argument validators (never a raw string): status, version, skill, god, noclip, give, impulse, kill, pause, save, load, map, restart, changelevel, connect, disconnect, quit, screenshot, toggleconsole. `god`, `pause`, `impulse` observed executing; `kill` observed with no effect (see the acceptance matrix). |
+| Console | `quake_console` | Allowlisted commands with typed argument validators (never a raw string): status, version, skill, god, noclip, give, impulse, kill, pause, save, load, map, restart, changelevel, connect, disconnect, quit, screenshot, toggleconsole. `god`, `pause`, `impulse` observed executing; `kill` observed forwarding and executing (engine log `player suicides`; single player answers with a level restart — see the death-flow table). Gameplay-class commands run a bounded realtime flush in a stepped session. |
 | Settings | `quake_config` | Curated cvar read list plus `access_*` readable; only `access_mouseonly` writable (other access cvars hold command strings). |
 | Frame formats | bridge capture -> `vision.py` | `glReadPixels` raw 8-bit RGB, bottom-up, HUD included; converted to PNG by default (JPEG optional), longest edge 1280 with no upscaling, 2-slot ring, 32 MiB source cap, `GL_PACK_ALIGNMENT` 1. Unavailable readback -> `RENDER_UNAVAILABLE`; no fresh frame -> `FRAME_TIMEOUT`; evicted -> `FRAME_EXPIRED`. |
 | Telemetry policy | `quake_observe`/`quake_act telemetry=` | `hud` (default) keeps health/ammo/dead with provenance; `pixels_only` strips gameplay telemetry and derived dead flag. |

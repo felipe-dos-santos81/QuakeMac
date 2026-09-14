@@ -128,12 +128,15 @@ def test_save_overwrite_guard(fake, monkeypatch, tmp_path):
         lifecycle.forget("qtest")
 
 
-def test_respawn_unsupported(fake, monkeypatch):
+def test_respawn_requires_dead(fake, monkeypatch):
+    """Task 7: respawn is supported, but only from a dead player; the
+    fake bridge's empty state is alive, so it must refuse before any act."""
     _register(monkeypatch)
     try:
         r = _call("quake_game", {"instance": "qtest",
                                  "operation": "respawn"})
-        assert r.isError and "UNSUPPORTED_CAPABILITY" in _text(r)
+        assert r.isError and "NOT_READY" in _text(r)
+        assert not any(op == "act" for op, _ in fake.calls)
     finally:
         lifecycle.forget("qtest")
 

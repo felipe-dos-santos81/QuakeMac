@@ -46,6 +46,16 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 SAVE_WAIT_SECS = 10.0
 WORLD_WAIT_SECS = 30.0
 
+# Forwarded console commands need a running clock (Task 7); 250 ms was
+# measured to carry a kill through the client message and the single-
+# player level restart it triggers. The respawn tap holds attack across a
+# death think (its cadence is 0.1 s) and then waits, bounded.
+CONSOLE_FLUSH_SECS = 0.25
+RESPAWN_WAIT_SECS = 10.0
+RESPAWN_SETTLE_SECS = 0.25
+RESPAWN_TAP_SECS = 1.0
+RESPAWN_TAP_TICKS = 8
+
 # Bounds of the per-instance act receipt cache (Task 5): evict-oldest by
 # entry count and by evictable bytes.
 RECEIPT_LIMIT = 16
@@ -707,8 +717,10 @@ async def quake_game(instance: str, operation: str, map_id: str = "",
     save {slot} (refuses to replace without overwrite=true), load {slot},
     list_maps / list_saves (gamedir inventory). Completion means the world
     generation advanced and the client is accepting input (new_game,
-    restart, load_map, load) or the save file was written. `respawn` is
-    unsupported until its death-flow semantics are verified.
+    restart, load_map, load) or the save file was written. `respawn`
+    requires a dead player (NOT_READY otherwise) and returns
+    {respawned, waited_ms}: it taps attack, bounded, until the player is
+    alive again; in single player respawn restarts the level.
 
     The mutating operations carry the controller-lease envelope (see
     quake_act); list_maps and list_saves stay reads.
@@ -720,13 +732,12 @@ async def quake_game(instance: str, operation: str, map_id: str = "",
     if operation == "list_saves":
         return {"operation": operation,
                 "saves": await _offload(_list_saves, inst)}
-    if operation == "respawn":
-        raise ValueError("UNSUPPORTED_CAPABILITY: respawn semantics "
-                         "unverified")
     env = {"action_id": action_id, "lease": lease,
            "action_seq": action_seq, "epoch": epoch,
            "world_generation": world_generation,
            "control_revision": control_revision}
+    if operation == "respawn":
+        return await _respawn_op(inst, env)
     if operation == "new_game":
         return await _world_op(inst, operation, "map start", env)
     if operation == "restart":
@@ -805,6 +816,69 @@ async def _save_op(inst, slot, path, env):
                          % (slot, tail[-200:]))
 
 
+async def _console_flush(inst):
+    """Run the clock briefly so a forwarded console command can execute.
+
+    Gameplay commands (`kill`, `pause`, `give`) travel through the client
+    message, which a stepped session never sends; the bounded realtime
+    window delivers them and restores stepped afterwards. A realtime
+    session is untouched, and the engine's own mode stays the authority.
+    """
+    if (await _offload(_state, inst)).get("mode") != "stepped":
+        return
+    await _offload(_mutate, inst, "control", sub="mode", mode="realtime")
+    try:
+        await anyio.sleep(CONSOLE_FLUSH_SECS)
+    finally:
+        await _offload(_mutate, inst, "control", sub="mode", mode="stepped")
+
+
+async def _respawn_op(inst, env):
+    """Attack-tap respawn from a dead player, bounded.
+
+    The progs' death think only accepts a tap after a tick with the
+    buttons released (a held button keeps deadflag at DEAD_DEAD), and
+    respawn() in single player restarts the level. So the loop resumes
+    the clock for a stepped session, gives one buttons-released settle
+    window, taps attack across a death think, and repeats until the
+    player is alive or the deadline passes.
+    """
+    st = await _offload(_state, inst)
+    if not st.get("dead"):
+        raise ValueError("NOT_READY: player is not dead")
+    stepped = st.get("mode") == "stepped"
+    started = time.time()
+    deadline = started + RESPAWN_WAIT_SECS
+    respawned = False
+    async with _cancel_releases(inst):
+        try:
+            if stepped:
+                await _offload(_mutate, inst, "control", sub="mode",
+                               mode="realtime")
+            while time.time() < deadline:
+                await anyio.sleep(RESPAWN_SETTLE_SECS)
+                args = {"forward": "0", "strafe": "0", "vertical": "0",
+                        "run": "0", "yaw": "0", "pitch": "0", "attack": "1",
+                        "jump": "none", "impulse": "0",
+                        "ticks": str(RESPAWN_TAP_TICKS), "respawn": "1"}
+                await _offload(_mutate, inst, "act", **dict(args, **env))
+                env = {}
+                tap_deadline = min(deadline, time.time() + RESPAWN_TAP_SECS)
+                while time.time() < tap_deadline:
+                    if not (await _offload(_state, inst)).get("dead"):
+                        respawned = True
+                        break
+                    await anyio.sleep(0.1)
+                if respawned:
+                    break
+        finally:
+            if stepped:
+                await _offload(_mutate, inst, "control", sub="mode",
+                               mode="stepped")
+    return {"respawned": respawned,
+            "waited_ms": int((time.time() - started) * 1000)}
+
+
 @mcp.tool(annotations=RO_FALSE)
 async def quake_config(instance: str, operation: str, name: str,
                        value: str = "", action_id: str = "", lease: str = "",
@@ -856,7 +930,9 @@ async def quake_console(instance: str, command: str,
 
     Never accepts a raw command line; anything outside the allowlist is
     POLICY_DENIED. Gameplay commands require a ready world (NOT_READY
-    otherwise); pause 0 resumes and is exempt. The returned tail reflects
+    otherwise); pause 0 resumes and is exempt. Gameplay commands forward
+    through the client message, so a stepped session runs a bounded
+    realtime window before restoring the mode. The returned tail reflects
     the console as of the reply and can predate the command's own output;
     poll again to see it.
     """
@@ -872,6 +948,8 @@ async def quake_console(instance: str, command: str,
                              action_seq=action_seq, epoch=epoch,
                              world_generation=world_generation,
                              control_revision=control_revision)
+        if cls == "gameplay":
+            await _console_flush(inst)
     return {"command": command, "args": list(args),
             "output": res.get("output", "")}
 

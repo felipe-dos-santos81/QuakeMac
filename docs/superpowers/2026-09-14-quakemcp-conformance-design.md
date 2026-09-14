@@ -208,26 +208,34 @@ pumps `MCP_Poll`.
 
 ## 7. Death flow and intermission
 
-Review finding: `kill` had no observable effect. Verified mechanism:
-`Host_Kill_f` forwards the command through `Cmd_ForwardToServer`
-(`Quake/host_cmd.c:1194-1197`), and forwarded client commands reach the server
-only during simulation steps — so in a frozen stepped session the command
-queues indefinitely. Server commands execute directly in this in-process
-server, while client commands travel in the client message — consistent with
-`_world_op` already having to resume realtime for map/restart sign-on.
+Review finding: `kill` had no observable effect. The forwarding half was
+confirmed: `Host_Kill_f` forwards through `Cmd_ForwardToServer`
+(`Quake/host_cmd.c:1194-1197`), and forwarded client commands reach the
+server only during simulation steps — so in a frozen stepped session the
+command queues indefinitely.
 
-- Reproduce `kill` in realtime and stepped; record both.
-- Classify allowlisted commands by whether they forward through the client
-  message path (`kill`, `give`, `impulse`, server-visible cvars). Those run
-  with the clock live for a bounded flush window (proposed: up to 250 ms
-  realtime), then the session's mode is restored — the same pattern
-  `_world_op` already uses.
-- With the mechanism verified, implement `quake_game respawn` as a bounded
-  input action (attack tap) that waits for health/death-state recovery, and
-  record its evidence. If the observed mechanism differs, implement what is
-  observed, not what is assumed.
-- Reach intermission via `map end` (or the observed equivalent) and record the
-  result. Unreachable paths stay FAIL with cause, never inflated.
+**Observed 2026-09-14 (Task 7; raw captures in the Task 7 report).** The
+mechanism differs in its outcome. The shipped id1 progs answer `kill` with a
+**level restart**: `ClientKill` calls `respawn()`, whose single-player branch
+is `localcmd ("restart\n")`. A realtime kill therefore leaves no standing
+corpse (client health 0 for one sign-on window, then 100 again;
+`world_gen` +1). A stable dead state needs a monster kill (`map end` is
+Shub-Niggurath's Pit — the Rotfish kills the player), and from there
+`PlayerDeathThink` requires a tick with all buttons released before an
+attack tap calls `respawn()`, which again restarts the level.
+
+- Gameplay-class console commands forward through the client message path;
+  a stepped session runs a bounded realtime flush (250 ms, measured to carry
+  the kill and its restart to a settled world in 3/3 runs) and restores the
+  mode.
+- `quake_game respawn` requires `state.dead` on entry (`NOT_READY`
+  otherwise); it runs the clock, settles one buttons-released window, taps
+  attack (8 ticks, spanning the 0.1 s death think), and repeats until alive
+  or the 10 s bound, returning `{respawned, waited_ms}`.
+- Intermission is **unreachable from the tool surface**: `svc_intermission`
+  is written by the progs' `execute_changelevel` (a level-exit path), not by
+  the engine, and `map end` leaves the player dead with `intermission`
+  false. Recorded as an observed FAIL with cause; never faked true.
 
 ## 8. Hygiene and documentary truth
 
