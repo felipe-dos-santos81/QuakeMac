@@ -4,14 +4,18 @@ Logs to stderr only — stdout carries MCP traffic. Task 4 registered the
 4 lifecycle tools; Task 5 added quake_act, Task 6 quake_state. The rest
 land in Tasks 7-8. Unregistered tools must NOT appear in tools/list.
 """
+import base64
+import json
 import sys
 import traceback
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import (CallToolResult, ImageContent, TextContent,
+                       ToolAnnotations)
 
-from . import lifecycle
-from .models import EngineDisconnected, Observation, QuakeMCPError
+from . import lifecycle, vision
+from .models import (ActOut, EngineDisconnected, Observation, ObserveOut,
+                     QuakeMCPError, STATE_KEYS, StateOut)
 
 mcp = FastMCP("quakemcp")
 
@@ -47,7 +51,7 @@ def quake_status(instance: str = "") -> dict:
 
 
 @mcp.tool(annotations=RO_TRUE)
-def quake_state(instance: str) -> dict:
+def quake_state(instance: str) -> StateOut:
     """Return one read-only engine state snapshot.
 
     Keys: epoch, world_gen, control_rev, frame, time, map, pos, angles,
@@ -118,6 +122,125 @@ def quake_attach(instance: str, port: int, token: str) -> dict:
     return {"instance": inst.instance_id, "bridge_ready": True}
 
 
+def _fetch_observation(inst, instance, after_frame=0, timeout_ms=1000):
+    """Bridge round trip for one state+pixels snapshot.
+
+    Returns (raw_rgb, bridge_result). The blob is read only after the
+    header line, and its length is checked against the declared source
+    dimensions.
+    """
+    client = inst.client()
+    try:
+        reply = client.send("observe", after_frame=str(int(after_frame)),
+                            timeout_ms=str(int(timeout_ms)))
+        if reply.get("ok") is not True:
+            raise ValueError("%s: %s" % (
+                reply.get("error", "ENGINE_DISCONNECTED"),
+                reply.get("detail", "")))
+        res = reply.get("result", {})
+        blob_bytes = int(res.get("blob_bytes", 0))
+        raw = client.read_blob(blob_bytes) if blob_bytes else b""
+    except EngineDisconnected as e:
+        raise ValueError("%s: %s" % (e.code, e.detail))
+    finally:
+        client.close()
+
+    src_w = int(res.get("src_w", 0))
+    src_h = int(res.get("src_h", 0))
+    if len(raw) != src_w * src_h * 3:
+        raise ValueError("INVALID_CONTEXT: blob size does not match %dx%d"
+                         % (src_w, src_h))
+    return raw, res
+
+
+def _encode_observation(inst, instance, after_frame=0, timeout_ms=1000,
+                        longest_edge=1280, image_format="png", crop=None,
+                        allow_hud_crop=False):
+    """Fetch one observation and encode it. Returns (encoded, report,
+    structured) with structured ready for telemetry policy filtering."""
+    raw, res = _fetch_observation(inst, instance, after_frame=after_frame,
+                                  timeout_ms=timeout_ms)
+    src_w = int(res["src_w"])
+    src_h = int(res["src_h"])
+    encoded, report = vision.encode_frame(
+        raw, src_w, src_h, longest_edge=longest_edge, fmt=image_format,
+        crop=crop or None, hud_rect=res.get("hud_rect") or None,
+        allow_hud_crop=allow_hud_crop)
+
+    structured = {k: res[k] for k in STATE_KEYS if k in res}
+    structured["instance"] = instance
+    for k in ("src_w", "src_h", "out_w", "out_h", "crop", "scale",
+              "encoding", "frame_hash"):
+        structured[k] = report[k]
+    for k in ("viewport", "hud_rect", "capture_age_ms"):
+        if k in res:
+            structured[k] = res[k]
+    return encoded, report, structured
+
+
+def _image_content(encoded, encoding):
+    mime = "image/png" if encoding == "png" else "image/jpeg"
+    return ImageContent(type="image",
+                        data=base64.b64encode(encoded).decode(),
+                        mimeType=mime)
+
+
+def _caption(structured):
+    return TextContent(type="text",
+                       text=json.dumps(structured, sort_keys=True))
+
+
+@mcp.tool(annotations=RO_TRUE)
+def quake_observe(
+    instance: str,
+    after_frame: int = 0,
+    timeout_ms: int = 1000,
+    longest_edge: int = 1280,
+    image_format: str = "png",
+    crop: list[int] = [],
+    telemetry: str = "hud",
+    allow_hud_crop: bool = False,
+) -> ObserveOut:
+    """Return the rendered frame as an image plus its state snapshot.
+
+    Pixels and state come from one immutable snapshot: the structured
+    result carries the same `frame` as the image bytes. after_frame
+    waits for a frame newer than that id, bounded by timeout_ms
+    (1..10000). Images are PNG by default (jpeg optional), aspect-
+    preserving down to longest_edge with no upscaling; crop [x,y,w,h]
+    is in source-image coordinates and may not drop the HUD unless
+    allow_hud_crop is true. telemetry hud (default) keeps health/ammo;
+    pixels_only removes gameplay telemetry and derived flags.
+    """
+    if not instance:
+        raise ValueError("ENGINE_DISCONNECTED: no instance")
+    inst = lifecycle.get(instance)
+    if inst is None:
+        raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
+                         % (instance,))
+    if image_format not in vision.ENCODINGS:
+        raise ValueError("INVALID_CONTEXT: image_format must be png|jpeg")
+    if telemetry not in ("hud", "pixels_only"):
+        raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
+    if not 1 <= longest_edge <= 4096:
+        raise ValueError("INVALID_CONTEXT: longest_edge out of range 1..4096")
+    if not 1 <= timeout_ms <= 10000:
+        raise ValueError("INVALID_CONTEXT: timeout_ms out of range 1..10000")
+    if after_frame < 0:
+        raise ValueError("INVALID_CONTEXT: after_frame must be >= 0")
+
+    encoded, report, structured = _encode_observation(
+        inst, instance, after_frame=after_frame, timeout_ms=timeout_ms,
+        longest_edge=longest_edge, image_format=image_format, crop=crop,
+        allow_hud_crop=allow_hud_crop)
+    structured = vision.apply_telemetry(structured, telemetry)
+    return CallToolResult(
+        content=[_image_content(encoded, report["encoding"]),
+                 _caption(structured)],
+        structuredContent=structured,
+        isError=False)
+
+
 @mcp.tool(annotations=RO_FALSE)
 def quake_act(
     instance: str,
@@ -138,7 +261,8 @@ def quake_act(
     epoch: int = 0,
     world_generation: int = 0,
     control_revision: int = 0,
-) -> dict:
+    telemetry: str = "hud",
+) -> ActOut:
     """Run one bounded gameplay action; returns its completion observation.
 
     Axes: forward/strafe/vertical in [-1, 1], positive = forward/right/up.
@@ -148,16 +272,23 @@ def quake_act(
     weapon impulse 1..8 (0 = no switch). Exactly one of ticks (1..72) or
     duration_ms (1..1000) is required; a hard 5 s wall deadline applies.
 
+    The result carries the post-action rendered frame (image block) and
+    its matching state snapshot, so pixels and telemetry share one
+    `frame`. telemetry hud (default) keeps health/ammo; pixels_only
+    removes gameplay telemetry and derived flags.
+
     Second layer of the lease protocol: the bridge serializes mutations
     through the controller lease (acquired via quake_control in Task 8, or
     lazily here with action_seq defaulting to 1). world_generation and
     control_revision are accepted for schema stability but enforced in
-    Task 9. Image block lands in Task 7.
+    Task 9.
     """
     inst = lifecycle.get(instance)
     if inst is None:
         raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
                          % (instance,))
+    if telemetry not in ("hud", "pixels_only"):
+        raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
     if forward < -1.0 or forward > 1.0 or strafe < -1.0 or strafe > 1.0 \
             or vertical < -1.0 or vertical > 1.0:
         raise ValueError("INVALID_CONTEXT: axes must be within [-1, 1]")
@@ -218,14 +349,23 @@ def quake_act(
             reply.get("error", "ENGINE_DISCONNECTED"),
             reply.get("detail", "")))
     res = reply.get("result", {})
-    return {
+    completed = {
         "action_id": res.get("action_id", action_id),
         "completed_ticks": res.get("completed_ticks"),
         "elapsed_ms": res.get("elapsed_ms"),
         "interrupted": res.get("interrupted"),
-        "instance": instance,
-        "lease": lease,
     }
+    # the action observation must follow the final completed step and its
+    # render; a capture failure is surfaced, never fabricated
+    encoded, report, structured = _encode_observation(
+        inst, instance, after_frame=0, timeout_ms=2000)
+    structured.update(completed)
+    structured = vision.apply_telemetry(structured, telemetry)
+    return CallToolResult(
+        content=[_image_content(encoded, report["encoding"]),
+                 _caption(structured)],
+        structuredContent=structured,
+        isError=False)
 
 
 @mcp.tool(annotations=RO_FALSE_STOP)

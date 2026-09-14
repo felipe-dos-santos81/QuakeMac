@@ -929,6 +929,10 @@ void SCR_UpdateScreen (void)
 
 	V_UpdatePalette ();
 
+#ifdef QUAKE_MCP
+	MCAP_Frame ();
+#endif
+
 	GL_EndRendering ();
 }
 

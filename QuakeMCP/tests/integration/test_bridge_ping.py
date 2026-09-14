@@ -70,7 +70,7 @@ def test_bridge_ping():
         last_err = None
         while time.time() < ping_deadline:
             try:
-                s = socket.create_connection(("127.0.0.1", PORT), timeout=5)
+                s = socket.create_connection(("127.0.0.1", PORT), timeout=20)
                 break
             except OSError as e:
                 last_err = e

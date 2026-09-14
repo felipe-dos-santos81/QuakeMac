@@ -19,6 +19,7 @@ of the License, or (at your option) any later version.
 #include "q_mcp.h"
 
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -83,6 +84,10 @@ static char	mcp_act_aid[128];	// action_id echo
 static int	mcp_world_gen;
 static char	mcp_last_map[64];
 static double	mcp_last_svtime;
+
+// Deferred observation reply (Task 7): observe arms MCAP_* and the reply
+// is sent from MCP_Poll once the frame is captured.
+static char	mcp_observe_id[128];
 
 
 /*
@@ -511,6 +516,140 @@ static int MCP_FieldInt (char *line, char *name)
 
 /*
 ==================
+MCP_FormatState
+
+Write the state snapshot JSON fragment (no outer braces) shared by the
+state op and every observation. One pass over main-thread globals, so
+callers never mix reads from different snapshots. Returns the fragment
+length, or -1 if it did not fit.
+==================
+*/
+static int MCP_FormatState (char *out, int outsize)
+{
+	char escmap[256];
+	float *org, *ang;
+	int viewent, health, ammo, n;
+
+	// cl.viewentity can index out of range before a world is loaded
+	viewent = cl.viewentity;
+	if (viewent < 0 || viewent >= MAX_EDICTS)
+		viewent = 0;
+	org = cl_entities[viewent].origin;
+	ang = cl_entities[viewent].angles;
+	health = cl.stats[STAT_HEALTH];
+	ammo = cl.stats[STAT_AMMO];
+	MCP_Escape (escmap, sizeof (escmap), sv.name);
+	n = snprintf (out, outsize,
+		"\"epoch\":%d,\"world_gen\":%d,\"control_rev\":%d,"
+		"\"frame\":%u,\"time\":%.3f,\"map\":\"%s\","
+		"\"pos\":[%.2f,%.2f,%.2f],"
+		"\"angles\":[%.2f,%.2f,%.2f],"
+		"\"health\":%d,\"ammo\":%d,\"ui\":%d,"
+		"\"loading\":%s,\"dead\":%s,\"intermission\":%s,"
+		"\"signon\":%d,\"movemessages\":%d",
+		mcp_epoch, mcp_world_gen, mcp_control_rev,
+		MCP_FrameId (), host_time, escmap,
+		org[0], org[1], org[2], ang[0], ang[1], ang[2],
+		health, ammo, (int)key_dest,
+		scr_disabled_for_loading ? "true" : "false",
+		health <= 0 ? "true" : "false",
+		cl.intermission ? "true" : "false",
+		cls.signon, cl.movemessages);
+	if (n < 0 || n >= outsize)
+		return -1;
+	return n;
+}
+
+/*
+==================
+MCP_SendBlob
+
+Send raw framed bytes after a reply line. The client is waiting for
+exactly this payload, so a healthy reader drains in a few sends; a
+stalled reader is dropped at the deadline rather than freezing the
+frame loop.
+==================
+*/
+static qboolean MCP_SendBlob (byte *data, int len)
+{
+	double	stop;
+	int	sent, n;
+	fd_set	w;
+	struct timeval tv;
+
+	stop = Sys_DoubleTime () + 0.1;
+	sent = 0;
+	while (sent < len && mcp_client_fd >= 0)
+	{
+		n = send (mcp_client_fd, data + sent, len - sent, 0);
+		if (n > 0)
+		{
+			sent += n;
+			continue;
+		}
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		{
+			if (Sys_DoubleTime () > stop)
+			{
+				MCP_CloseClient ();
+				return false;
+			}
+			FD_ZERO (&w);
+			FD_SET (mcp_client_fd, &w);
+			tv.tv_sec = 0;
+			tv.tv_usec = 20000;
+			select (mcp_client_fd + 1, NULL, &w, NULL, &tv);
+			continue;
+		}
+		if (n < 0 && errno == EINTR)
+			continue;
+		MCP_CloseClient ();
+		return false;
+	}
+	return mcp_client_fd >= 0;
+}
+
+/*
+==================
+MCP_SendObservation
+
+Reply to the deferred observe op: one JSON header line (state + image
+metadata + blob_bytes) followed by the framed RGB blob.
+==================
+*/
+static void MCP_SendObservation (mcap_snapshot_t *snap)
+{
+	char	result[MCP_REPLY_MAX];
+	int	n, bytes;
+
+	n = MCP_FormatState (result, sizeof (result));
+	if (n < 0)
+	{
+		MCP_Reply (mcp_observe_id, false, "INVALID_CONTEXT",
+			"state snapshot overflow");
+		MCAP_Release ();
+		return;
+	}
+	bytes = snap->w * snap->h * 3;
+	snprintf (result + n, sizeof (result) - n,
+		",\"src_w\":%d,\"src_h\":%d,"
+		"\"viewport\":[%d,%d,%d,%d],\"hud_rect\":[%d,%d,%d,%d],"
+		"\"captured_at\":%.3f,\"capture_age_ms\":%d,\"blob_bytes\":%d",
+		snap->w, snap->h,
+		snap->viewport[0], snap->viewport[1],
+		snap->viewport[2], snap->viewport[3],
+		snap->hud_rect[0], snap->hud_rect[1],
+		snap->hud_rect[2], snap->hud_rect[3],
+		snap->captured_at,
+		(int)((Sys_DoubleTime () - snap->captured_at) * 1000.0),
+		bytes);
+	MCP_Reply (mcp_observe_id, true, NULL, result);
+	MCP_SendBlob (snap->data, bytes);
+	MCAP_Release ();
+}
+
+/*
+==================
 MCP_FinishAct
 
 Send the running action's completion reply and neutralize MCP input.
@@ -657,7 +796,7 @@ static void MCP_HandleLine (char *line)
 	char text[MCP_EXEC_MAX + 1];
 	char name[128], value[1024];
 	char tail[8192], esctail[8192 * 2], result[MCP_REPLY_MAX];
-	char escval[2048], escmap[256];
+	char escval[2048];
 	cvar_t *var;
 	int r;
 
@@ -785,36 +924,34 @@ static void MCP_HandleLine (char *line)
 
 	if (!strcmp (op, "state"))
 	{
-		float *org, *ang;
-		int viewent, health, ammo;
-
-		// single read-only snapshot on the main thread; cl.viewentity
-		// can index out of range before a world is loaded
-		viewent = cl.viewentity;
-		if (viewent < 0 || viewent >= MAX_EDICTS)
-			viewent = 0;
-		org = cl_entities[viewent].origin;
-		ang = cl_entities[viewent].angles;
-		health = cl.stats[STAT_HEALTH];
-		ammo = cl.stats[STAT_AMMO];
-		MCP_Escape (escmap, sizeof (escmap), sv.name);
-		snprintf (result, sizeof (result),
-			"\"epoch\":%d,\"world_gen\":%d,\"control_rev\":%d,"
-			"\"frame\":%u,\"time\":%.3f,\"map\":\"%s\","
-			"\"pos\":[%.2f,%.2f,%.2f],"
-			"\"angles\":[%.2f,%.2f,%.2f],"
-			"\"health\":%d,\"ammo\":%d,\"ui\":%d,"
-			"\"loading\":%s,\"dead\":%s,\"intermission\":%s,"
-			"\"signon\":%d,\"movemessages\":%d",
-			mcp_epoch, mcp_world_gen, mcp_control_rev,
-			MCP_FrameId (), host_time, escmap,
-			org[0], org[1], org[2], ang[0], ang[1], ang[2],
-			health, ammo, (int)key_dest,
-			scr_disabled_for_loading ? "true" : "false",
-			health <= 0 ? "true" : "false",
-			cl.intermission ? "true" : "false",
-			cls.signon, cl.movemessages);
+		if (MCP_FormatState (result, sizeof (result)) < 0)
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "state overflow");
+			return;
+		}
 		MCP_Reply (id, true, NULL, result);
+		return;
+	}
+
+	if (!strcmp (op, "observe"))
+	{
+		int after, tmo;
+
+		if (MCAP_Busy ())
+		{
+			MCP_Reply (id, false, "CONTROL_BUSY",
+				"observe already pending");
+			return;
+		}
+		strcpy (mcp_observe_id, id);
+		after = MCP_FieldInt (line, "after_frame");
+		tmo = MCP_FieldInt (line, "timeout_ms");
+		if (tmo <= 0)
+			tmo = 1000;
+		if (tmo > 10000)
+			tmo = 10000;
+		MCAP_Request ((unsigned)after, tmo / 1000.0);
+		// reply deferred: MCP_Poll captures and sends header + blob
 		return;
 	}
 
@@ -1023,6 +1160,8 @@ void MCP_Init (void)
 	mcp_world_gen = 0;
 	mcp_last_map[0] = 0;
 	mcp_last_svtime = 0;
+	mcp_observe_id[0] = 0;
+	MCAP_Shutdown ();	// normalize capture ring/statics
 }
 
 /*
@@ -1045,6 +1184,22 @@ void MCP_Poll (void)
 	MCP_UpdateWorldGen ();
 	MCP_CheckAction ();
 	MCP_CheckLease ();
+
+	if (MCAP_Busy ())
+	{
+		mcap_snapshot_t	snap;
+		int		rc;
+
+		rc = MCAP_Poll (&snap);
+		if (rc == 1)
+			MCP_SendObservation (&snap);
+		else if (rc == -1)
+			MCP_Reply (mcp_observe_id, false, "FRAME_TIMEOUT",
+				"no rendered frame within the window");
+		else if (rc == -2)
+			MCP_Reply (mcp_observe_id, false, "RENDER_UNAVAILABLE",
+				"frame readback unavailable");
+	}
 
 	if (mcp_listen_fd < 0)
 		MCP_Setup ();
@@ -1088,6 +1243,7 @@ void MCP_Shutdown (void)
 		unlink (mcp_token_path);
 	mcp_token_path[0] = 0;
 	mcp_token[0] = 0;
+	MCAP_Shutdown ();
 }
 
 /*

@@ -4,6 +4,7 @@ Pure validation only — no engine I/O, no sockets. The C bridge mirrors
 the wire semantics; this module is what the Python server enforces.
 """
 from dataclasses import dataclass, field
+from typing import NotRequired, TypedDict
 
 ERROR_CODES = (
     "NOT_READY",
@@ -43,6 +44,86 @@ REQUIRED_STATE_KEYS = (
 # Identity keys are the minimum an Observation must carry; the full
 # state group is frozen in Task 6 (state op).
 REQUIRED_IDENTITY_KEYS = ("instance", "epoch", "frame")
+
+# Bridge-side state snapshot keys (everything the `state` op returns).
+STATE_KEYS = (
+    "epoch",
+    "world_gen",
+    "control_rev",
+    "frame",
+    "time",
+    "map",
+    "pos",
+    "angles",
+    "health",
+    "ammo",
+    "ui",
+    "loading",
+    "dead",
+    "intermission",
+    "signon",
+    "movemessages",
+)
+
+
+class StateRequired(TypedDict):
+    """Observation fields that survive every telemetry policy."""
+
+    instance: str
+    epoch: int
+    world_gen: int
+    control_rev: int
+    frame: int
+    time: float
+    map: str
+    pos: list
+    angles: list
+    ui: int
+    loading: bool
+    intermission: bool
+    signon: int
+    movemessages: int
+
+
+class StateOut(StateRequired):
+    """quake_state output: authoritative HUD telemetry (hud policy)."""
+
+    health: int
+    ammo: int
+    dead: bool
+
+
+class ObserveOut(StateRequired):
+    """Observation output shared by quake_observe and quake_act.
+
+    Telemetry keys are optional: pixels_only removes them by policy.
+    The image group is declared and satisfied for every successful
+    observation (Task 7).
+    """
+
+    health: NotRequired[int]
+    ammo: NotRequired[int]
+    dead: NotRequired[bool]
+    src_w: int
+    src_h: int
+    out_w: int
+    out_h: int
+    viewport: list
+    hud_rect: list
+    crop: list
+    scale: float
+    encoding: str
+    frame_hash: str
+    capture_age_ms: int
+
+
+class ActOut(ObserveOut):
+    """quake_act output: completion facts plus the post-action frame."""
+
+    action_id: str
+    completed_ticks: int
+    elapsed_ms: int
+    interrupted: bool
 
 KNOWN_OPS = frozenset({
     "ping",

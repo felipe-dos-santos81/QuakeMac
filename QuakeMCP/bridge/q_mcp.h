@@ -18,4 +18,25 @@ void MCP_EndInput (void);
 // Tick notification (q_mcp.c): MCP_Move calls this once per merged tick.
 void MCP_NoteTick (void);
 
+// Vision capture (q_mcp_capture.c) — render-path glReadPixels into a
+// 2-slot ring, served to the deferred observe op.
+typedef struct
+{
+	byte	*data;			// RGB, bottom-up (glReadPixels order)
+	int	w, h;
+	int	viewport[4];		// glx, gly, glwidth, glheight
+	int	hud_rect[4];		// hud strip in top-down image coords
+	double	captured_at;		// Sys_DoubleTime at capture
+	unsigned frame;			// MCP_FrameId of the captured frame
+} mcap_snapshot_t;
+
+void MCAP_Request (unsigned after_frame, double timeout_secs);
+void MCAP_Frame (void);
+qboolean MCAP_Busy (void);
+// 1 = out filled (call MCAP_Release once the blob is sent), 0 = waiting,
+// -1 = FRAME_TIMEOUT, -2 = RENDER_UNAVAILABLE
+int MCAP_Poll (mcap_snapshot_t *out);
+void MCAP_Release (void);
+void MCAP_Shutdown (void);
+
 #endif

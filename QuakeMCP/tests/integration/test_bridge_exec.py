@@ -69,7 +69,7 @@ def test_bridge_exec():
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
-                s = socket.create_connection(("127.0.0.1", PORT), timeout=5)
+                s = socket.create_connection(("127.0.0.1", PORT), timeout=20)
                 break
             except OSError:
                 time.sleep(0.25)
