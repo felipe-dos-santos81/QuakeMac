@@ -945,6 +945,7 @@ void SCR_UpdateScreen (void)
 	V_UpdatePalette ();
 
 #ifdef QUAKE_MCP
+	MCP_UiDraw ();
 	MCAP_Frame ();
 #endif
 

@@ -1205,6 +1205,34 @@ static void MCP_ClearControl (void)
 
 /*
 ==================
+MCP_LeaseHeld
+
+True while a controller lease is live; the stop control draws and
+intercepts only then.
+==================
+*/
+int MCP_LeaseHeld (void)
+{
+	return mcp_lease_active && mcp_lease_id[0] != 0;
+}
+
+/*
+==================
+MCP_HumanTakeover
+
+The human pressed the visible stop control: revoke the lease exactly
+like an MCP release, so a running act ends interrupted, input is
+neutralized and a pending modal is denied. The session keeps its
+execution mode.
+==================
+*/
+void MCP_HumanTakeover (void)
+{
+	MCP_ClearControl ();
+}
+
+/*
+==================
 MCP_NoteTick
 
 Called by the host loop once per completed simulation step (local
