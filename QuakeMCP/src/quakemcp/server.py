@@ -513,6 +513,20 @@ def _receipt_get(inst, action_id):
     return entry
 
 
+def _observation_result(encoded, report, structured):
+    """The one CallToolResult shape every observation delivers.
+
+    The image block carries the recorded bytes; structured content stays
+    the caller's dictionary (already telemetry-filtered where policy
+    applies).
+    """
+    return CallToolResult(
+        content=[_image_content(encoded, report["encoding"]),
+                 _caption(structured)],
+        structuredContent=structured,
+        isError=False)
+
+
 def _replay(cached):
     """Rebuild the exact CallToolResult the live path delivered.
 
@@ -521,12 +535,8 @@ def _replay(cached):
     from the recorded bytes, never re-captured.
     """
     structured = dict(cached["structured"])
-    return CallToolResult(
-        content=[_image_content(cached["encoded"],
-                                cached["report"]["encoding"]),
-                 _caption(structured)],
-        structuredContent=structured,
-        isError=False)
+    return _observation_result(cached["encoded"], cached["report"],
+                               structured)
 
 
 @mcp.tool(annotations=RO_TRUE)
@@ -569,11 +579,7 @@ async def quake_observe(
         image_format=image_format, crop=crop,
         allow_hud_crop=allow_hud_crop)
     structured = vision.apply_telemetry(structured, telemetry)
-    return CallToolResult(
-        content=[_image_content(encoded, report["encoding"]),
-                 _caption(structured)],
-        structuredContent=structured,
-        isError=False)
+    return _observation_result(encoded, report, structured)
 
 
 @mcp.tool(annotations=RO_FALSE)
@@ -693,11 +699,7 @@ async def quake_act(
     structured = vision.apply_telemetry(structured, telemetry)
     if action_id:
         _receipt_store(inst, action_id, encoded, report, structured)
-    return CallToolResult(
-        content=[_image_content(encoded, report["encoding"]),
-                 _caption(structured)],
-        structuredContent=structured,
-        isError=False)
+    return _observation_result(encoded, report, structured)
 
 
 @mcp.tool(annotations=RO_FALSE)
@@ -1021,11 +1023,7 @@ async def quake_ui(instance: str, key: str = "", text: str = "",
             structured["needs_input"] = True
             structured["modal_text"] = res.get("modal_text", "")
             structured["action_id"] = res.get("action_id") or action_id
-            return CallToolResult(
-                content=[_image_content(encoded, report["encoding"]),
-                         _caption(structured)],
-                structuredContent=structured,
-                isError=False)
+            return _observation_result(encoded, report, structured)
     return {"key": key, "code": code}
 
 
