@@ -104,6 +104,18 @@ class Instance:
             self._hb_stop = None
         self._hb_thread = None
 
+    def clear_lease(self):
+        """Drop the local lease copy and its beat.
+
+        One path for release, cancellation, heartbeat loss and any other
+        STALE_STATE that revokes the lease; the next mutation lazily
+        acquires a fresh one.
+        """
+        self.stop_keepalive()
+        self.lease = ""
+        self.epoch = 0
+        self.next_seq = 0
+
     def stop(self):
         self.stop_keepalive()
         if not self.owned:

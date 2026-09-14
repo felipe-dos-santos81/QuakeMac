@@ -128,10 +128,7 @@ async def _cancel_releases(inst):
             # the release revoked the engine-side lease: drop the local
             # copy and the beat, exactly like quake_release does, so the
             # next mutation lazily acquires instead of trusting a dead id
-            inst.stop_keepalive()
-            inst.lease = ""
-            inst.epoch = 0
-            inst.next_seq = 0
+            inst.clear_lease()
         raise
 
 
@@ -195,8 +192,7 @@ def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
         code = reply.get("error", "ENGINE_DISCONNECTED")
         detail = reply.get("detail", "")
         if code == "STALE_STATE" and detail not in PRECONDITION_MISMATCHES:
-            inst.stop_keepalive()
-            inst.lease = ""
+            inst.clear_lease()
         raise ValueError("%s: %s" % (code, detail))
     return reply.get("result", {})
 
@@ -1067,10 +1063,7 @@ async def quake_control(instance: str, operation: str = "acquire",
             inst.epoch = res.get("epoch", 0)
             inst.keepalive(inst.lease, inst.epoch)
         else:
-            inst.stop_keepalive()
-            inst.lease = ""
-            inst.epoch = 0
-            inst.next_seq = 0
+            inst.clear_lease()
         out = {"operation": operation}
         for k in ("lease", "epoch", "control_rev", "released"):
             if k in res:
@@ -1097,10 +1090,7 @@ async def quake_release(instance: str, reason: str = "") -> dict:
     MCP input. Idempotent and safe with no lease held."""
     inst = _instance(instance)
     res = await _offload(_bridge_ok, inst, "release")
-    inst.stop_keepalive()
-    inst.lease = ""
-    inst.epoch = 0
-    inst.next_seq = 0
+    inst.clear_lease()
     return {"released": res.get("released", True), "reason": reason}
 
 

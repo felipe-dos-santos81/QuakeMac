@@ -9,7 +9,7 @@ import anyio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
                                 "src"))
 
-from quakemcp import server
+from quakemcp import lifecycle, server
 
 
 class BlockingClient:
@@ -32,7 +32,7 @@ class BlockingClient:
         pass
 
 
-class Inst:
+class Inst(lifecycle.Instance):
     def __init__(self, started, record):
         self.started = started
         self.record = record
