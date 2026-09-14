@@ -142,6 +142,8 @@ KNOWN_OPS = frozenset({
     "state",
     "observe",
     "key",
+    "tail",
+    "status",
 })
 
 MAX_LINE_BYTES = 65536
@@ -167,7 +169,8 @@ def _validate_skill(value):
 
 
 def _validate_impulse(value):
-    if not value.isdigit() or not 0 <= int(value) <= 255:
+    if (not (value.isascii() and value.isdigit())
+            or not 0 <= int(value) <= 255):
         raise ValueError("INVALID_CONTEXT: impulse must be 0..255")
     return value
 

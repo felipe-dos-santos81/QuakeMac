@@ -93,6 +93,29 @@ def test_control_connection_during_deferred_act():
         proc.kill(); proc.wait()
 
 
+def test_third_connection_is_closed():
+    proc, token = _launch()
+    try:
+        a = _client(token)
+        b = _client(token)
+        c = _client(token)
+        try:
+            # ping both connected slots so the bridge has accepted them
+            # before the third arrives; both peers stay live, so no slot
+            # is reaped and the accept path drops the new fd
+            for conn in (a, b):
+                _send(conn[1], {"v": 1, "auth": token, "id": "1",
+                                "op": "ping"})
+                assert _recv(conn[1])["ok"] is True
+            # the dropped fd was closed on accept: the third peer reads
+            # EOF promptly
+            assert c[0].recv(1) == b""
+        finally:
+            a[0].close(); b[0].close(); c[0].close()
+    finally:
+        proc.kill(); proc.wait()
+
+
 def test_eof_mid_act_finishes_action():
     proc, token = _launch()
     try:

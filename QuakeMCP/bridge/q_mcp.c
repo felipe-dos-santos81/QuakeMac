@@ -1512,17 +1512,17 @@ static void MCP_HandleLine (char *line)
 
 	if (!MCP_Field (line, "id", id, sizeof (id)))
 		strcpy (id, "");
+	if (!MCP_Field (line, "auth", auth, sizeof (auth))
+		|| strcmp (auth, mcp_token) != 0)
+	{
+		MCP_Reply (id, false, "POLICY_DENIED", "bad auth");
+		return;
+	}
 	// the wire protocol is v1; additions are additive fields only
 	if (MCP_FieldRawInt (line, "v") != 1)
 	{
 		MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY",
 			"protocol version");
-		return;
-	}
-	if (!MCP_Field (line, "auth", auth, sizeof (auth))
-		|| strcmp (auth, mcp_token) != 0)
-	{
-		MCP_Reply (id, false, "POLICY_DENIED", "bad auth");
 		return;
 	}
 	if (!MCP_Field (line, "op", op, sizeof (op)))

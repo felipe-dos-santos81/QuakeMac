@@ -146,7 +146,10 @@ def test_bridge_act():
             assert reply["ok"] is True, reply
             res = reply["result"]
             assert res["yaw_applied_deg"] == 30, reply
-            assert res["pitch_applied_deg"] <= 80, reply
+            # +200 up pitch clamps to the engine's -70 view limit
+            # (q_mcp_input.c MCP_Move), so exactly 70 degrees apply
+            assert res["pitch_applied_deg"] == pytest.approx(70.0, abs=0.1), \
+                reply
             assert res["weapon_requested"] == 2, reply
             assert "weapon_active" in res, reply
 
