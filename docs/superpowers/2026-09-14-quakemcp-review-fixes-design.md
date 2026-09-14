@@ -115,10 +115,13 @@ input paths remain byte-identical.
 ### 3.3 Server reaction (`QuakeMCP/src/quakemcp/lifecycle.py`)
 
 The keepalive thread currently ignores the `hb` reply and beats forever. The
-beat now inspects it: a `STALE_STATE` reply stops the beat and clears local
-lease state via `Instance.clear_lease()` (§4.1), so `quake_status` reports
-`lease_held: false` and a fresh acquire succeeds. Pinned by a unit test against
-the fake bridge.
+beat now inspects it: a `STALE_STATE` reply for the generation that round is
+beating for stops the beat and clears local lease state via
+`Instance.clear_lease()` (§4.1), so `quake_status` reports `lease_held: false`
+and a fresh acquire succeeds. The clear is generation-guarded: a late reply
+from a superseded beat stops that thread without touching a newer lease a
+later mutation may already have lazily re-acquired. Pinned by unit tests
+against the fake bridge.
 
 ### 3.4 Verification
 

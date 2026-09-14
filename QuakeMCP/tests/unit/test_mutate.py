@@ -27,7 +27,7 @@ class FakeClient:
         pass
 
 
-class FakeInstance:
+class FakeInstance(lifecycle.Instance):
     def __init__(self, replies):
         self.replies = replies
         self.calls = []

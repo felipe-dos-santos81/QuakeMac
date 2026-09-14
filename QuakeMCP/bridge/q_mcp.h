@@ -58,4 +58,13 @@ int MCAP_Poll (mcap_snapshot_t *out);
 void MCAP_Release (void);
 void MCAP_Shutdown (void);
 
+// Human takeover (q_mcp.c, q_mcp_ui.c): the visible stop control. While
+// a lease is held the banner draws and a physical left click revokes the
+// lease through MCP_ClearControl. MCP_UiMouseClick returns nonzero when
+// it swallowed the event; MCP_HumanTakeover is the shared revoke path.
+int MCP_LeaseHeld (void);
+void MCP_HumanTakeover (void);
+void MCP_UiDraw (void);
+int MCP_UiMouseClick (int button, qboolean down);
+
 #endif

@@ -13,7 +13,7 @@ no-op macro shims, so vanilla builds and `QuakeWorld/` stay unchanged.
 
 | Path | Contents |
 |---|---|
-| `bridge/` | C bridge in glquake (`q_mcp.c` socket/lease/actions, `q_mcp_input.c` input merge, `q_mcp_capture.c` framebuffer readback) |
+| `bridge/` | C bridge in glquake (`q_mcp.c` socket/lease/actions, `q_mcp_input.c` input merge, `q_mcp_capture.c` framebuffer readback, `q_mcp_ui.c` takeover banner/click) |
 | `src/quakemcp/` | Python server (`server.py` tools, `lifecycle.py` supervision, `engine.py` bridge client, `models.py` policy/types, `vision.py` image encoding) |
 | `tests/` | `unit/` + `contract/` (no engine), `integration/` (real binary) |
 | `docs/` | Hook inventory + op map (`engine-integration.md`), measured results (`acceptance-results.md`) |
@@ -97,7 +97,7 @@ structured state, both carrying the same `frame`.
 | `quake_console` | One allowlisted console command with validated arguments |
 | `quake_config` | Read/write curated input, view, audio, and `access_*` settings |
 | `quake_control` | Acquire/release/detach the lease; set stepped/realtime mode |
-| `quake_release` | Priority emergency stop: cancel actions, neutralize input |
+| `quake_release` | Priority emergency stop: cancel actions, neutralize input; the in-game banner left-click is the human equivalent |
 
 ## Protocol at a glance
 
@@ -111,6 +111,9 @@ structured state, both carrying the same `frame`.
   channel), so heartbeats and `release` stay serviceable while an `act` or
   `observe` reply is deferred; a third connection is closed.
 - The lease expires after 2 s of silence; the server heartbeats every 500 ms.
+- While a lease is held a top-center `MCP CONTROL - LEFT-CLICK TO STOP`
+  banner offers a left-click human takeover that revokes the lease; the
+  swallowed click never reaches the game.
 - Stepped mode freezes the simulation between actions and advances exactly
   `ticks` steps; realtime mode runs normally and accepts `duration_ms`.
 
@@ -143,6 +146,9 @@ the repo.
   see the death-flow table in `docs/engine-integration.md`.
 - Water movement and vision usability are partially verified; evidence in
   `docs/acceptance-results.md`.
+- Human takeover is verified manually (a real window click cannot be injected
+  by the harness); while a lease is held any left-click takes over — there is
+  no cursor or hit test — and the session keeps its mode afterwards.
 - glquake only; the headless `qwsv` and `glqwcl` have no bridge.
 
 ## Documentation

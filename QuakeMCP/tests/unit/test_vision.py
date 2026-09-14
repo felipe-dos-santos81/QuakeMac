@@ -103,3 +103,23 @@ def test_bad_length_rejected():
         vision.encode_frame(b"\x00" * 10, 4, 4)
     with pytest.raises(ValueError):
         vision.encode_frame(b"\x00" * (4 * 4 * 3), 4, 4, fmt="webp")
+
+
+def test_error_messages_carry_codes():
+    raw = _gradient(8, 8)
+    with pytest.raises(vision.BadCrop) as e:
+        vision.encode_frame(raw, 8, 8, crop=[0, 0, 9, 1])
+    assert str(e.value).startswith("INVALID_CONTEXT: "), e.value
+
+    with pytest.raises(vision.BadCrop) as e:
+        vision.encode_frame(raw, 8, 8, crop=[0, 0, 8, 4],
+                            hud_rect=[0, 6, 8, 2])
+    assert str(e.value).startswith("POLICY_DENIED: "), e.value
+
+    with pytest.raises(ValueError) as e:
+        vision.encode_frame(raw, 8, 8, fmt="gif")
+    assert str(e.value).startswith("INVALID_CONTEXT: "), e.value
+
+    with pytest.raises(vision.ImageTooLarge) as e:
+        vision.encode_frame(os.urandom(1024 * 1024 * 3), 1024, 1024)
+    assert str(e.value).startswith("POLICY_DENIED: "), e.value

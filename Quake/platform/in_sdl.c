@@ -17,6 +17,10 @@ SDL3 notes:
 #include "quakedef.h"
 #include "cl_access.h"
 
+#ifdef QUAKE_MCP
+#include "q_mcp.h"
+#endif
+
 extern SDL_Window *sdl_window;	/* owned by gl_vidsdl.c */
 
 static qboolean        mouse_avail;
@@ -176,8 +180,14 @@ static void HandleEvents(void)
 			else if (event.button.button == SDL_BUTTON_X2)
 				b = 4;
 			if (b >= 0)
+			{
+#ifdef QUAKE_MCP
+				if (MCP_UiMouseClick (b, event.button.down))
+					break;
+#endif
 				Access_ButtonEvent(K_MOUSE1 + b, event.button.down,
 				                   (unsigned int)SDL_GetTicks());
+			}
 			break;
 
 		case SDL_EVENT_MOUSE_WHEEL:

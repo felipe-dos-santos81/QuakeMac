@@ -121,6 +121,7 @@ QUAKE_RELEASE_CFLAGS += $(QUAKE_MCP_CFLAGS)
 QUAKE_DEBUG_CFLAGS += $(QUAKE_MCP_CFLAGS)
 QUAKE_MCP_OBJS = $(QUAKE_BUILDDIR)/mcp/q_mcp.o \
 	$(QUAKE_BUILDDIR)/mcp/q_mcp_input.o \
+	$(QUAKE_BUILDDIR)/mcp/q_mcp_ui.o \
 	$(QUAKE_BUILDDIR)/mcp/q_mcp_capture.o
 endif
 $(QUAKE_BUILDDIR)/mcp:

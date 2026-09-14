@@ -128,10 +128,7 @@ async def _cancel_releases(inst):
             # the release revoked the engine-side lease: drop the local
             # copy and the beat, exactly like quake_release does, so the
             # next mutation lazily acquires instead of trusting a dead id
-            inst.stop_keepalive()
-            inst.lease = ""
-            inst.epoch = 0
-            inst.next_seq = 0
+            inst.clear_lease()
         raise
 
 
@@ -195,8 +192,7 @@ def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
         code = reply.get("error", "ENGINE_DISCONNECTED")
         detail = reply.get("detail", "")
         if code == "STALE_STATE" and detail not in PRECONDITION_MISMATCHES:
-            inst.stop_keepalive()
-            inst.lease = ""
+            inst.clear_lease()
         raise ValueError("%s: %s" % (code, detail))
     return reply.get("result", {})
 
@@ -375,8 +371,6 @@ async def quake_start(profile: str = "local", port: int = 28900) -> dict:
     inst = None
     try:
         inst = await _offload(lifecycle.launch, profile, port=port)
-    except EngineDisconnected as e:
-        raise ValueError("%s: %s" % (e.code, e.detail))
     except QuakeMCPError as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     assert inst is not None
@@ -407,8 +401,6 @@ async def quake_attach(instance: str, port: int, token: str) -> dict:
     inst = None
     try:
         inst = await _offload(lifecycle.attach, instance, port, token)
-    except EngineDisconnected as e:
-        raise ValueError("%s: %s" % (e.code, e.detail))
     except QuakeMCPError as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     assert inst is not None
@@ -517,6 +509,20 @@ def _receipt_get(inst, action_id):
     return entry
 
 
+def _observation_result(encoded, report, structured):
+    """The one CallToolResult shape every observation delivers.
+
+    The image block carries the recorded bytes; structured content stays
+    the caller's dictionary (already telemetry-filtered where policy
+    applies).
+    """
+    return CallToolResult(
+        content=[_image_content(encoded, report["encoding"]),
+                 _caption(structured)],
+        structuredContent=structured,
+        isError=False)
+
+
 def _replay(cached):
     """Rebuild the exact CallToolResult the live path delivered.
 
@@ -525,12 +531,8 @@ def _replay(cached):
     from the recorded bytes, never re-captured.
     """
     structured = dict(cached["structured"])
-    return CallToolResult(
-        content=[_image_content(cached["encoded"],
-                                cached["report"]["encoding"]),
-                 _caption(structured)],
-        structuredContent=structured,
-        isError=False)
+    return _observation_result(cached["encoded"], cached["report"],
+                               structured)
 
 
 @mcp.tool(annotations=RO_TRUE)
@@ -573,11 +575,7 @@ async def quake_observe(
         image_format=image_format, crop=crop,
         allow_hud_crop=allow_hud_crop)
     structured = vision.apply_telemetry(structured, telemetry)
-    return CallToolResult(
-        content=[_image_content(encoded, report["encoding"]),
-                 _caption(structured)],
-        structuredContent=structured,
-        isError=False)
+    return _observation_result(encoded, report, structured)
 
 
 @mcp.tool(annotations=RO_FALSE)
@@ -628,10 +626,7 @@ async def quake_act(
     A retried action_id replays the exact recorded frame; once that frame
     is evicted the retry is FRAME_EXPIRED, never a re-shoot.
     """
-    inst = lifecycle.get(instance)
-    if inst is None:
-        raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
-                         % (instance,))
+    inst = _instance(instance)
     if telemetry not in ("hud", "pixels_only"):
         raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
     if forward < -1.0 or forward > 1.0 or strafe < -1.0 or strafe > 1.0 \
@@ -697,11 +692,7 @@ async def quake_act(
     structured = vision.apply_telemetry(structured, telemetry)
     if action_id:
         _receipt_store(inst, action_id, encoded, report, structured)
-    return CallToolResult(
-        content=[_image_content(encoded, report["encoding"]),
-                 _caption(structured)],
-        structuredContent=structured,
-        isError=False)
+    return _observation_result(encoded, report, structured)
 
 
 @mcp.tool(annotations=RO_FALSE)
@@ -1025,11 +1016,7 @@ async def quake_ui(instance: str, key: str = "", text: str = "",
             structured["needs_input"] = True
             structured["modal_text"] = res.get("modal_text", "")
             structured["action_id"] = res.get("action_id") or action_id
-            return CallToolResult(
-                content=[_image_content(encoded, report["encoding"]),
-                         _caption(structured)],
-                structuredContent=structured,
-                isError=False)
+            return _observation_result(encoded, report, structured)
     return {"key": key, "code": code}
 
 
@@ -1067,10 +1054,7 @@ async def quake_control(instance: str, operation: str = "acquire",
             inst.epoch = res.get("epoch", 0)
             inst.keepalive(inst.lease, inst.epoch)
         else:
-            inst.stop_keepalive()
-            inst.lease = ""
-            inst.epoch = 0
-            inst.next_seq = 0
+            inst.clear_lease()
         out = {"operation": operation}
         for k in ("lease", "epoch", "control_rev", "released"):
             if k in res:
@@ -1097,20 +1081,14 @@ async def quake_release(instance: str, reason: str = "") -> dict:
     MCP input. Idempotent and safe with no lease held."""
     inst = _instance(instance)
     res = await _offload(_bridge_ok, inst, "release")
-    inst.stop_keepalive()
-    inst.lease = ""
-    inst.epoch = 0
-    inst.next_seq = 0
+    inst.clear_lease()
     return {"released": res.get("released", True), "reason": reason}
 
 
 @mcp.tool(annotations=RO_FALSE_STOP)
 async def quake_stop(instance: str) -> dict:
     """Stop an owned child. Refuses attached user-owned processes."""
-    inst = lifecycle.get(instance)
-    if inst is None:
-        raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
-                         % (instance,))
+    inst = _instance(instance)
     result = None
     try:
         result = await _offload(inst.stop)

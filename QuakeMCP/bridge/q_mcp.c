@@ -421,31 +421,29 @@ static int MCP_ReapEofSlot (void)
 
 /*
 ==================
-MCP_Field
+MCP_NextMember
 
-Copy the top-level string value of "name" from a flat JSON line.
-Returns 1 if the full value fit, -1 if truncated to outsize (still
-NUL-terminated), 0 if absent. Nested objects are skipped, so a key
-inside a nested value never matches. Handles \" \\ \/ \b \f \n
-\r \t escapes; \uXXXX decodes to '?' (protocol carries ASCII).
+Advance to the next top-level member of a flat JSON object. On success
+returns true, setting *keystart / *keylen to the raw key bytes between
+the quotes and *val past the colon plus whitespace; *pp ends at *val.
+Strings inside nested values never count as keys. Returns false at the
+end of the object.
 ==================
 */
-static int MCP_Field (char *line, char *name, char *out, int outsize)
+static qboolean MCP_NextMember (char **pp, char **keystart, int *keylen,
+	char **val)
 {
-	char *p, *q;
-	int depth, n, full, i;
+	char	*p = *pp;
+	int	depth = 0;
 
-	p = line;
 	if (*p == '{')
 		p++;
-	depth = 0;
 	while (*p)
 	{
 		while (*p == ' ' || *p == '\t')
 			p++;
 		if (*p != '"')
 		{
-		// skip value noise between members
 			if (*p == '{' || *p == '[')
 				depth++;
 			else if (*p == '}' || *p == ']')
@@ -457,20 +455,114 @@ static int MCP_Field (char *line, char *name, char *out, int outsize)
 			p++;
 			continue;
 		}
-	// quoted key at top level?
-		q = p + 1;
-		n = strlen (name);
-		if (depth == 0 && !strncmp (q, name, n) && q[n] == '"')
-		{
-			p = strchr (q + n + 1, ':');
-			if (!p)
-				return 0;
+		if (depth > 0)
+		{	// a string inside a nested value: skip it
 			p++;
-			while (*p == ' ' || *p == '\t')
+			while (*p && *p != '"')
+			{
+				if (*p == '\\' && p[1])
+					p++;
 				p++;
-			if (*p != '"')
-				return 0;
+			}
+			if (*p == '"')
+				p++;
+			continue;
+		}
+		*keystart = p + 1;
+		p = *keystart;
+		while (*p && *p != '"')
+		{
+			if (*p == '\\' && p[1])
+				p++;
 			p++;
+		}
+		if (*p != '"')
+			break;
+		*keylen = (int)(p - *keystart);
+		p++;
+		p = strchr (p, ':');
+		if (!p)
+			break;
+		p++;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		*val = p;
+		*pp = p;
+		return true;
+	}
+	*pp = p;
+	return false;
+}
+
+/*
+==================
+MCP_SkipValue
+
+Advance *pp past the current member's value to its comma or the closing
+brace (left on the delimiter). Quoted values honor escapes; raw values
+walk nested braces so a comma inside them is not a boundary.
+==================
+*/
+static void MCP_SkipValue (char **pp)
+{
+	char	*p = *pp;
+	int	depth = 0;
+
+	if (*p == '"')
+	{
+		p++;
+		while (*p && *p != '"')
+		{
+			if (*p == '\\' && p[1])
+				p++;
+			p++;
+		}
+		if (*p == '"')
+			p++;
+		*pp = p;
+		return;
+	}
+	while (*p)
+	{
+		if (*p == '{' || *p == '[')
+			depth++;
+		else if (*p == '}' || *p == ']')
+		{
+			if (depth == 0)
+				break;
+			depth--;
+		}
+		else if (*p == ',' && depth == 0)
+			break;
+		p++;
+	}
+	*pp = p;
+}
+
+/*
+==================
+MCP_Field
+
+Copy the top-level string value of "name" from a flat JSON line.
+Returns 1 if the full value fit, -1 if truncated to outsize (still
+NUL-terminated), 0 if absent. Nested objects are skipped, so a key
+inside a nested value never matches. Handles \" \\ \/ \b \f \n
+\r \t escapes; \uXXXX decodes to '?' (protocol carries ASCII).
+==================
+*/
+static int MCP_Field (char *line, char *name, char *out, int outsize)
+{
+	char	*p, *ks, *v;
+	int	klen, n, full, i;
+
+	p = line;
+	while (MCP_NextMember (&p, &ks, &klen, &v))
+	{
+		if (klen == (int)strlen (name) && !strncmp (ks, name, klen))
+		{
+			if (*v != '"')
+				return 0;
+			p = v + 1;
 			n = 0;
 			full = 0;
 			while (*p && *p != '"')
@@ -513,16 +605,7 @@ static int MCP_Field (char *line, char *name, char *out, int outsize)
 			out[n] = 0;
 			return (full <= outsize - 1) ? 1 : -1;
 		}
-	// skip this quoted string, then track depth past it
-		p = q;
-		while (*p && *p != '"')
-		{
-			if (*p == '\\' && p[1])
-				p++;
-			p++;
-		}
-		if (*p == '"')
-			p++;
+		MCP_SkipValue (&p);
 	}
 	out[0] = 0;
 	return 0;
@@ -1122,6 +1205,34 @@ static void MCP_ClearControl (void)
 
 /*
 ==================
+MCP_LeaseHeld
+
+True while a controller lease is live; the stop control draws and
+intercepts only then.
+==================
+*/
+int MCP_LeaseHeld (void)
+{
+	return mcp_lease_active && mcp_lease_id[0] != 0;
+}
+
+/*
+==================
+MCP_HumanTakeover
+
+The human pressed the visible stop control: revoke the lease exactly
+like an MCP release, so a running act ends interrupted, input is
+neutralized and a pending modal is denied. The session keeps its
+execution mode.
+==================
+*/
+void MCP_HumanTakeover (void)
+{
+	MCP_ClearControl ();
+}
+
+/*
+==================
 MCP_NoteTick
 
 Called by the host loop once per completed simulation step (local
@@ -1155,10 +1266,9 @@ static unsigned MCP_HashRequest (char *op, char *line)
 		"v", "auth", "id", "lease", "epoch", "seq",
 		"action_id", "world_generation", "control_revision", NULL
 	};
-	char key[64];
-	char *p, *q;
+	char	key[64], *p, *ks, *v, *q;
 	unsigned h;
-	int depth, i, n, skip;
+	int	klen, i, n, skip;
 
 	h = 2166136261u;
 	for (q = op; *q; q++)
@@ -1168,51 +1278,18 @@ static unsigned MCP_HashRequest (char *op, char *line)
 	}
 
 	p = line;
-	if (*p == '{')
-		p++;
-	depth = 0;
-	while (*p)
+	while (MCP_NextMember (&p, &ks, &klen, &v))
 	{
-		while (*p == ' ' || *p == '\t')
-			p++;
-		if (*p != '"')
-		{
-			if (*p == '{' || *p == '[')
-				depth++;
-			else if (*p == '}' || *p == ']')
-			{
-				if (depth == 0)
-					break;
-				depth--;
-			}
-			p++;
-			continue;
-		}
-	// one top-level key
-		q = p + 1;
+		// the hash sees the key with escapes resolved, as before
 		n = 0;
-		while (*q && *q != '"')
+		for (q = ks; q < ks + klen; q++)
 		{
-			if (*q == '\\' && q[1])
+			if (*q == '\\' && q + 1 < ks + klen)
 				q++;
 			if (n + 1 < (int)sizeof (key))
 				key[n++] = *q;
-			q++;
 		}
 		key[n] = 0;
-		if (*q == '"')
-			q++;
-		if (depth > 0)
-		{
-			p = q;
-			continue;
-		}
-		p = strchr (q, ':');
-		if (!p)
-			break;
-		p++;
-		while (*p == ' ' || *p == '\t')
-			p++;
 		skip = false;
 		for (i = 0; envelope[i]; i++)
 		{
@@ -1232,6 +1309,7 @@ static unsigned MCP_HashRequest (char *op, char *line)
 			h ^= '=';
 			h *= 16777619u;
 		}
+		p = v;
 		if (*p == '"')
 		{
 		// quoted value: hash the wire bytes, escapes included
@@ -1472,6 +1550,27 @@ static qboolean MCP_CheckSequence (char *line, char *id, int *seq)
 
 /*
 ==================
+MCP_BeginMutation
+
+The shared envelope preamble for every mutation: canonical hash, known
+duplicate, then preconditions. Returns false when a reply has already
+been sent. `act` checks CONTROL_BUSY between this and MCP_CheckSequence;
+every caller checks its sequence next.
+==================
+*/
+static qboolean MCP_BeginMutation (char *op, char *line, char *id,
+	unsigned *hash)
+{
+	*hash = MCP_HashRequest (op, line);
+	if (MCP_LookupReceipt (line, id))
+		return false;
+	if (!MCP_CheckPreconditions (line, id))
+		return false;
+	return true;
+}
+
+/*
+==================
 MCP_GameplayReady
 
 The act gate: a local world must be loaded, past sign-on, past the
@@ -1554,16 +1653,11 @@ static void MCP_HandleLine (char *line)
 		}
 		if (r == 0 || text[0] == 0)
 		{
-			// no text mutates nothing: this stays a read until the
-			// tail op replaces the old exec text="" idiom
-			MCP_FormatTail (result, sizeof (result));
-			MCP_Reply (id, true, NULL, result);
+			MCP_Reply (id, false, "INVALID_CONTEXT",
+				"exec needs text; use tail to read the console");
 			return;
 		}
-		hash = MCP_HashRequest (op, line);
-		if (MCP_LookupReceipt (line, id))
-			return;
-		if (!MCP_CheckPreconditions (line, id))
+		if (!MCP_BeginMutation (op, line, id, &hash))
 			return;
 		if (!MCP_CheckSequence (line, id, &seq))
 			return;
@@ -1589,10 +1683,7 @@ static void MCP_HandleLine (char *line)
 		hasval = MCP_Field (line, "value", value, sizeof (value)) != 0;
 		if (hasval)
 		{
-			hash = MCP_HashRequest (op, line);
-			if (MCP_LookupReceipt (line, id))
-				return;
-			if (!MCP_CheckPreconditions (line, id))
+			if (!MCP_BeginMutation (op, line, id, &hash))
 				return;
 			if (!MCP_CheckSequence (line, id, &seq))
 				return;
@@ -1621,10 +1712,7 @@ static void MCP_HandleLine (char *line)
 	{
 		int	key, down, keyfd;
 
-		hash = MCP_HashRequest (op, line);
-		if (MCP_LookupReceipt (line, id))
-			return;
-		if (!MCP_CheckPreconditions (line, id))
+		if (!MCP_BeginMutation (op, line, id, &hash))
 			return;
 		if (!MCP_CheckSequence (line, id, &seq))
 			return;
@@ -1707,10 +1795,7 @@ static void MCP_HandleLine (char *line)
 		{
 			char mode[32];
 
-			hash = MCP_HashRequest (op, line);
-			if (MCP_LookupReceipt (line, id))
-				return;
-			if (!MCP_CheckPreconditions (line, id))
+			if (!MCP_BeginMutation (op, line, id, &hash))
 				return;
 			if (!MCP_CheckSequence (line, id, &seq))
 				return;
@@ -1895,15 +1980,11 @@ static void MCP_HandleLine (char *line)
 		if (!MCP_Field (line, "action_id", aida, sizeof (aida)))
 			aida[0] = 0;
 
-		hash = MCP_HashRequest (op, line);
-
 		// known duplicate: the same op + lease + action_id + arguments
 		// returns its recorded receipt; different arguments under the
 		// same id are a conflict, never a second execution. Acts with
 		// no action_id carry no identity and are never deduplicated.
-		if (MCP_LookupReceipt (line, id))
-			return;
-		if (!MCP_CheckPreconditions (line, id))
+		if (!MCP_BeginMutation (op, line, id, &hash))
 			return;
 		if (mcp_act_active)
 		{
