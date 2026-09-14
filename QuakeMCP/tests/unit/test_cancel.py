@@ -34,21 +34,17 @@ class BlockingClient:
 
 class Inst(lifecycle.Instance):
     def __init__(self, started, record):
+        super().__init__("qfake", -1, 0, "tok", owned=False)
         self.started = started
         self.record = record
         self.lease = "l1-1"
         self.epoch = 7
-        self.next_seq = 0
-        self._hb_thread = object()
 
     def client(self):
         return BlockingClient(self.started, self.record)
 
     def keepalive(self, lease, epoch):
         pass
-
-    def stop_keepalive(self):
-        self._hb_thread = None
 
 
 def test_cancelled_tool_sends_emergency_release():

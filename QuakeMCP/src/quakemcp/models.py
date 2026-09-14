@@ -236,6 +236,8 @@ KEY_CODES.update({"f%d" % n: 134 + n for n in range(1, 13)})
 
 UI_CONTEXTS = {"game": 0, "console": 1, "message": 2, "menu": 3}
 
+TELEMETRY_MODES = ("hud", "pixels_only")
+
 # Static capability manifest: what this server and bridge actually
 # support. `tools` mirrors the registered tool surface; keep it in step
 # with server.py. `respawn` is listed once its death-flow semantics were
@@ -255,7 +257,7 @@ CAPABILITIES = {
     "frames": {"formats": ["png", "jpeg"], "longest_edge": 1280,
                "crop": True},
     "modes": ["stepped", "realtime"],
-    "telemetry": ["hud", "pixels_only"],
+    "telemetry": list(TELEMETRY_MODES),
     "console": sorted(CONSOLE_COMMANDS),
     "game": ["new_game", "restart", "load_map", "save", "load",
              "list_maps", "list_saves", "respawn"],

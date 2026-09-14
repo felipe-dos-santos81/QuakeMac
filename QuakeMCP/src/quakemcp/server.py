@@ -154,18 +154,12 @@ def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
     epoch = epoch or inst.epoch
     if not lease or not epoch:
         res = _bridge_ok(inst, "control", sub="acquire")
-        acquired = res.get("lease", "")
-        epoch = res.get("epoch", 0)
-        # a same-lease re-acquire means the bridge kept its sequence
-        # high-water; rewinding here would spend a sequence the engine
-        # never consumed and the next mutation would be RESULT_EXPIRED.
-        # Only a lease this instance has never used starts a fresh fence.
-        if acquired != inst.lease:
-            inst.next_seq = 0
-        lease = acquired
-    inst.lease, inst.epoch = lease, epoch
-    if not getattr(inst, "_hb_thread", None):
-        inst.keepalive(lease, epoch)
+        inst.adopt_lease(res.get("lease", ""), res.get("epoch", 0))
+        lease, epoch = inst.lease, inst.epoch
+    else:
+        inst.lease, inst.epoch = lease, epoch
+        if not inst._hb_thread:
+            inst.keepalive(lease, epoch)
     if action_seq <= 0:
         inst.next_seq += 1
         action_seq = inst.next_seq
@@ -192,7 +186,7 @@ def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
         code = reply.get("error", "ENGINE_DISCONNECTED")
         detail = reply.get("detail", "")
         if code == "STALE_STATE" and detail not in PRECONDITION_MISMATCHES:
-            inst.clear_lease()
+            inst.drop_lease_for(lease, epoch)
         raise ValueError("%s: %s" % (code, detail))
     return reply.get("result", {})
 
@@ -560,8 +554,7 @@ async def quake_observe(
     inst = _instance(instance)
     if image_format not in vision.ENCODINGS:
         raise ValueError("INVALID_CONTEXT: image_format must be png|jpeg")
-    if telemetry not in ("hud", "pixels_only"):
-        raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
+    vision.validate_telemetry(telemetry)
     if not 1 <= longest_edge <= 4096:
         raise ValueError("INVALID_CONTEXT: longest_edge out of range 1..4096")
     if not 1 <= timeout_ms <= 10000:
@@ -627,8 +620,7 @@ async def quake_act(
     is evicted the retry is FRAME_EXPIRED, never a re-shoot.
     """
     inst = _instance(instance)
-    if telemetry not in ("hud", "pixels_only"):
-        raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
+    vision.validate_telemetry(telemetry)
     if forward < -1.0 or forward > 1.0 or strafe < -1.0 or strafe > 1.0 \
             or vertical < -1.0 or vertical > 1.0:
         raise ValueError("INVALID_CONTEXT: axes must be within [-1, 1]")
@@ -1039,20 +1031,10 @@ async def quake_control(instance: str, operation: str = "acquire",
     if operation in ("acquire", "release", "detach"):
         res = await _offload(_bridge_ok, inst, "control", sub=operation)
         if operation == "acquire":
-            # the server owns the lease while the caller holds it: beat
-            # every 500 ms so tool calls longer than the 2 s expiry
-            # (image encoding, world loads) do not lose control
-            lease_id = res.get("lease", "")
-            # a redundant acquire returns the same lease, and the bridge
-            # preserves its sequence high-water for it; rewinding here
-            # would spend a sequence the engine already consumed and the
-            # next mutation would be RESULT_EXPIRED. Only a new lease id
-            # opens a fresh fence.
-            if lease_id != inst.lease:
-                inst.next_seq = 0
-            inst.lease = lease_id
-            inst.epoch = res.get("epoch", 0)
-            inst.keepalive(inst.lease, inst.epoch)
+            # the server owns the lease while the caller holds it; adopt
+            # keeps it beating across tool calls longer than the 2 s
+            # expiry (image encoding, world loads)
+            inst.adopt_lease(res.get("lease", ""), res.get("epoch", 0))
         else:
             inst.clear_lease()
         out = {"operation": operation}

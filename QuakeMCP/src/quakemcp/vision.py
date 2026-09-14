@@ -15,6 +15,8 @@ from io import BytesIO
 
 from PIL import Image
 
+from .models import TELEMETRY_MODES
+
 MAX_ENCODED_BYTES = 2 * 1024 * 1024
 JPEG_QUALITY = 85
 
@@ -32,14 +34,19 @@ class BadCrop(ValueError):
     """Crop rectangle is invalid or would silently drop the HUD."""
 
 
+def validate_telemetry(mode):
+    """Fail INVALID_CONTEXT unless mode is a supported telemetry policy."""
+    if mode not in TELEMETRY_MODES:
+        raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
+
+
 def apply_telemetry(payload, mode):
     """Return the observation payload under the telemetry policy.
 
     hud: authoritative gameplay values as captured.
     pixels_only: gameplay telemetry and derived flags are removed.
     """
-    if mode not in ("hud", "pixels_only"):
-        raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
+    validate_telemetry(mode)
     out = dict(payload)
     if mode == "pixels_only":
         for key in GAMEPLAY_TELEMETRY_KEYS:

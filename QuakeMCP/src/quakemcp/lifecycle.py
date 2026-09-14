@@ -90,6 +90,21 @@ class Instance:
         self._hb_thread = threading.Thread(target=beat, daemon=True)
         self._hb_thread.start()
 
+    def adopt_lease(self, lease, epoch):
+        """Record an acquire reply as the local lease and keep it beating.
+
+        A redundant acquire returns the same lease and the bridge keeps
+        its sequence high-water; rewinding here would spend a sequence
+        the engine never consumed and the next mutation would be
+        RESULT_EXPIRED. Only a new lease id opens a fresh fence.
+        """
+        if lease != self.lease:
+            self.next_seq = 0
+        self.lease = lease
+        self.epoch = epoch
+        if not self._hb_thread:
+            self.keepalive(lease, epoch)
+
     def _heartbeat_round(self, lease, epoch):
         """One beat. False when the bridge says the lease is gone.
 
@@ -112,8 +127,7 @@ class Instance:
             client.close()
         if reply.get("ok") is not True \
                 and reply.get("error") == "STALE_STATE":
-            if self.lease == lease and self.epoch == epoch:
-                self.clear_lease()
+            self.drop_lease_for(lease, epoch)
             return False
         return True
 
@@ -134,6 +148,16 @@ class Instance:
         self.lease = ""
         self.epoch = 0
         self.next_seq = 0
+
+    def drop_lease_for(self, lease, epoch):
+        """Clear the local lease only when it is still the named generation.
+
+        Stale replies arrive late from both the heartbeat and mutations;
+        a reply for a superseded lease/beat must not clear a lease
+        another caller has since adopted.
+        """
+        if self.lease == lease and self.epoch == epoch:
+            self.clear_lease()
 
     def stop(self):
         self.stop_keepalive()

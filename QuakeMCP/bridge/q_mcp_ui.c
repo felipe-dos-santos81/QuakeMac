@@ -26,40 +26,24 @@ static qboolean	mcp_stop_swallow;	// matching left-up after takeover
 
 /*
 ==================
-MCP_UiRect
-
-Screen-space rect of the stop banner (top-center, 8x8 font metrics).
-False while there is nothing to draw.
-==================
-*/
-static qboolean MCP_UiRect (int *x, int *y, int *w, int *h)
-{
-	int	textw;
-
-	if (!MCP_LeaseHeld () || vid.width <= 0 || vid.height <= 0)
-		return false;
-	textw = strlen (MCP_STOP_TEXT) * 8;
-	*w = textw + 2 * MCP_STOP_PAD;
-	*h = 8 + 2 * MCP_STOP_PAD;
-	*x = (vid.width - *w) / 2;
-	*y = MCP_STOP_MARGIN;
-	return true;
-}
-
-/*
-==================
 MCP_UiDraw
 
 Called at the end of SCR_UpdateScreen, so the banner is part of the
-frame the bridge captures.
+frame the bridge captures. The banner is top-center (8x8 font metrics)
+and nothing is drawn without a lease.
 ==================
 */
 void MCP_UiDraw (void)
 {
-	int	x, y, w, h;
+	int	textw, x, y, w, h;
 
-	if (!MCP_UiRect (&x, &y, &w, &h))
+	if (!MCP_LeaseHeld () || vid.width <= 0 || vid.height <= 0)
 		return;
+	textw = strlen (MCP_STOP_TEXT) * 8;
+	w = textw + 2 * MCP_STOP_PAD;
+	h = 8 + 2 * MCP_STOP_PAD;
+	x = (vid.width - w) / 2;
+	y = MCP_STOP_MARGIN;
 	Draw_FillAlpha (x, y, w, h, 12, 0.65f);
 	Draw_FillAlpha (x + 1, y + 1, w - 2, h - 2, 0, 0.65f);
 	Draw_StringAlpha (x + MCP_STOP_PAD, y + MCP_STOP_PAD,

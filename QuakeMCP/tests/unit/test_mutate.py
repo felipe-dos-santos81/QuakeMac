@@ -29,12 +29,9 @@ class FakeClient:
 
 class FakeInstance(lifecycle.Instance):
     def __init__(self, replies):
+        super().__init__("qfake", -1, 0, "tok", owned=False)
         self.replies = replies
         self.calls = []
-        self.lease = ""
-        self.epoch = 0
-        self.next_seq = 0
-        self._hb_thread = None
 
     def client(self):
         self.calls.append(FakeClient(self.replies))
@@ -42,9 +39,6 @@ class FakeInstance(lifecycle.Instance):
 
     def keepalive(self, lease, epoch):
         self._hb_thread = object()
-
-    def stop_keepalive(self):
-        self._hb_thread = None
 
 
 class DisconnectedClient:
@@ -102,6 +96,37 @@ def test_mutate_stale_state_drops_lease_and_beat():
     except ValueError as e:
         assert str(e) == "STALE_STATE: lease mismatch"
     assert inst.lease == "" and inst._hb_thread is None
+
+
+class RacingClient:
+    """A reply that lands after another caller adopted a newer lease."""
+
+    def __init__(self, inst):
+        self.inst = inst
+
+    def send(self, op, **kw):
+        self.inst.lease, self.inst.epoch = "l2-9", 9
+        return {"ok": False, "error": "STALE_STATE",
+                "detail": "lease mismatch"}
+
+    def close(self):
+        pass
+
+
+def test_mutate_stale_reply_for_superseded_lease_keeps_current():
+    """A late STALE_STATE for a lease another caller has replaced must
+    not clear the lease that is live now; the heartbeat sibling has the
+    same generation guard."""
+    inst = FakeInstance([])
+    inst.lease, inst.epoch, inst.next_seq = "l1-1", 7, 3
+    inst.client = lambda: RacingClient(inst)
+    try:
+        server._mutate(inst, "key", key="27", down="1")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert str(e) == "STALE_STATE: lease mismatch"
+    # the attempt consumed local seq 4, but the live lease must survive
+    assert (inst.lease, inst.epoch, inst.next_seq) == ("l2-9", 9, 4)
 
 
 @pytest.mark.parametrize("detail", ["world generation mismatch",

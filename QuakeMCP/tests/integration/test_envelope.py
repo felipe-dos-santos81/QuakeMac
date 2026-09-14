@@ -193,6 +193,12 @@ def test_protocol_version_gate(bridge):
     assert reply["error"] == "UNSUPPORTED_CAPABILITY", reply
 
 
+def test_protocol_version_is_top_level_only(bridge):
+    """A nested "v":2 must not trip the version gate on a v1 request."""
+    reply = bridge.op(id="11b", op="ping", pad={"v": 2}, v=1)
+    assert reply["ok"] is True, reply
+
+
 def test_exec_text_is_required(bridge):
     lease, epoch = bridge.acquire()
     env = {"lease": lease, "epoch": str(epoch)}

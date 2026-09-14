@@ -77,7 +77,6 @@ static double	mcp_retry_at = 0;
 
 static int	mcp_epoch;
 static int	mcp_control_rev;
-static int	mcp_lease_active;
 static char	mcp_lease_id[64];	// "l<epoch>-<control_rev>"
 static int	mcp_lease_seq;
 static double	mcp_lease_lastbeat;
@@ -421,6 +420,37 @@ static int MCP_ReapEofSlot (void)
 
 /*
 ==================
+MCP_ScanQuoted
+
+*p points at an opening quote. Advances *pp past the closing quote (or
+to the NUL when unterminated) and sets *content_end to the first byte
+after the string body: the closing quote, or the NUL. True when the
+quote closed. One escape-aware walk for keys and values alike.
+==================
+*/
+static qboolean MCP_ScanQuoted (char **pp, char **content_end)
+{
+	char	*p = *pp;
+
+	p++;
+	while (*p && *p != '"')
+	{
+		if (*p == '\\' && p[1])
+			p++;
+		p++;
+	}
+	*content_end = p;
+	if (*p == '"')
+	{
+		*pp = p + 1;
+		return true;
+	}
+	*pp = p;
+	return false;
+}
+
+/*
+==================
 MCP_NextMember
 
 Advance to the next top-level member of a flat JSON object. On success
@@ -434,6 +464,7 @@ static qboolean MCP_NextMember (char **pp, char **keystart, int *keylen,
 	char **val)
 {
 	char	*p = *pp;
+	char	*ce;
 	int	depth = 0;
 
 	if (*p == '{')
@@ -457,29 +488,13 @@ static qboolean MCP_NextMember (char **pp, char **keystart, int *keylen,
 		}
 		if (depth > 0)
 		{	// a string inside a nested value: skip it
-			p++;
-			while (*p && *p != '"')
-			{
-				if (*p == '\\' && p[1])
-					p++;
-				p++;
-			}
-			if (*p == '"')
-				p++;
+			MCP_ScanQuoted (&p, &ce);
 			continue;
 		}
 		*keystart = p + 1;
-		p = *keystart;
-		while (*p && *p != '"')
-		{
-			if (*p == '\\' && p[1])
-				p++;
-			p++;
-		}
-		if (*p != '"')
+		if (!MCP_ScanQuoted (&p, &ce))
 			break;
-		*keylen = (int)(p - *keystart);
-		p++;
+		*keylen = (int)(ce - *keystart);
 		p = strchr (p, ':');
 		if (!p)
 			break;
@@ -506,19 +521,12 @@ walk nested braces so a comma inside them is not a boundary.
 static void MCP_SkipValue (char **pp)
 {
 	char	*p = *pp;
+	char	*ce;
 	int	depth = 0;
 
 	if (*p == '"')
 	{
-		p++;
-		while (*p && *p != '"')
-		{
-			if (*p == '\\' && p[1])
-				p++;
-			p++;
-		}
-		if (*p == '"')
-			p++;
+		MCP_ScanQuoted (&p, &ce);
 		*pp = p;
 		return;
 	}
@@ -620,17 +628,17 @@ Read an unquoted numeric top-level field (the wire's "v").
 */
 static int MCP_FieldRawInt (char *line, char *name)
 {
-	char	pat[32];
-	char	*p;
+	char	*p, *ks, *v;
+	int	klen;
 
-	snprintf (pat, sizeof (pat), "\"%s\":", name);
-	p = strstr (line, pat);
-	if (!p)
-		return -1;
-	p += strlen (pat);
-	while (*p == ' ' || *p == '\t')
-		p++;
-	return atoi (p);
+	p = line;
+	while (MCP_NextMember (&p, &ks, &klen, &v))
+	{
+		if (klen == (int)strlen (name) && !strncmp (ks, name, klen))
+			return atoi (v);
+		MCP_SkipValue (&p);
+	}
+	return -1;
 }
 
 /*
@@ -784,7 +792,7 @@ static void MCP_Reply (char *id, qboolean ok, char *error, char *result)
 MCP_FormatTail
 
 Write the escaped console tail as a result body (no outer braces):
-shared by the tail op, the read half of exec and the exec receipt.
+shared by the tail op and the exec receipt.
 ==================
 */
 static void MCP_FormatTail (char *out, int outsize)
@@ -1183,7 +1191,6 @@ would press, so the dialog never outlives the lease that opened it.
 static void MCP_ClearControl (void)
 {
 	mcp_control_rev++;
-	mcp_lease_active = 0;
 	mcp_lease_id[0] = 0;
 	MCP_FinishAct (true);
 	MCP_EndInput ();
@@ -1213,7 +1220,7 @@ intercepts only then.
 */
 int MCP_LeaseHeld (void)
 {
-	return mcp_lease_active && mcp_lease_id[0] != 0;
+	return mcp_lease_id[0] != 0;
 }
 
 /*
@@ -1266,7 +1273,7 @@ static unsigned MCP_HashRequest (char *op, char *line)
 		"v", "auth", "id", "lease", "epoch", "seq",
 		"action_id", "world_generation", "control_revision", NULL
 	};
-	char	key[64], *p, *ks, *v, *q;
+	char	key[64], *p, *ks, *v, *q, *ce;
 	unsigned h;
 	int	klen, i, n, skip;
 
@@ -1313,49 +1320,22 @@ static unsigned MCP_HashRequest (char *op, char *line)
 		if (*p == '"')
 		{
 		// quoted value: hash the wire bytes, escapes included
-			for (p++; *p && *p != '"'; p++)
-			{
-				if (!skip)
-				{
-					h ^= (unsigned char)*p;
-					h *= 16777619u;
-				}
-				if (*p == '\\' && p[1])
-				{
-					p++;
-					if (!skip)
-					{
-						h ^= (unsigned char)*p;
-						h *= 16777619u;
-					}
-				}
-			}
-			if (*p == '"')
-				p++;
+			q = p + 1;
+			MCP_ScanQuoted (&p, &ce);
 		}
 		else
 		{
 		// raw value (number, bool, null, nested): hash to the member end
-			int d = 0;
-
-			while (*p)
+			q = p;
+			MCP_SkipValue (&p);
+			ce = p;
+		}
+		if (!skip)
+		{
+			for (; q < ce; q++)
 			{
-				if (*p == '{' || *p == '[')
-					d++;
-				else if (*p == '}' || *p == ']')
-				{
-					if (d == 0)
-						break;
-					d--;
-				}
-				else if (*p == ',' && d == 0)
-					break;
-				if (!skip)
-				{
-					h ^= (unsigned char)*p;
-					h *= 16777619u;
-				}
-				p++;
+				h ^= (unsigned char)*q;
+				h *= 16777619u;
 			}
 		}
 	}
@@ -1372,11 +1352,10 @@ marked "duplicate"; the same identity with different arguments is
 refused, never executed twice. Returns true when a reply was sent.
 ==================
 */
-static qboolean MCP_LookupReceipt (char *line, char *id)
+static qboolean MCP_LookupReceipt (char *line, char *id, unsigned hash)
 {
 	char op[64], aid[128], leas[64], epocs[32];
 	char body[MCP_REPLY_MAX];
-	unsigned hash;
 	int i;
 
 	if (!MCP_Field (line, "action_id", aid, sizeof (aid)) || !aid[0])
@@ -1387,7 +1366,6 @@ static qboolean MCP_LookupReceipt (char *line, char *id)
 	epocs[0] = 0;
 	MCP_Field (line, "lease", leas, sizeof (leas));
 	MCP_Field (line, "epoch", epocs, sizeof (epocs));
-	hash = MCP_HashRequest (op, line);
 	for (i = 0; i < MCP_LEDGER_SIZE; i++)
 	{
 		mcp_ledger_t *e = &mcp_ledger[i];
@@ -1466,7 +1444,7 @@ running to its wall cap on a silent lease.
 */
 static void MCP_CheckLease (void)
 {
-	if (!mcp_lease_active)
+	if (!MCP_LeaseHeld ())
 		return;
 	if (Sys_DoubleTime () - mcp_lease_lastbeat > MCP_LEASE_TIMEOUT)
 		MCP_ClearControl ();
@@ -1486,7 +1464,7 @@ static qboolean MCP_CheckPreconditions (char *line, char *id)
 	char leas[64] = { 0 }, epocs[32] = { 0 };
 	char worlds[32] = { 0 }, ctrls[32] = { 0 };
 
-	if (!mcp_lease_active || mcp_lease_id[0] == 0)
+	if (!MCP_LeaseHeld ())
 	{
 		MCP_Reply (id, false, "STALE_STATE", "no lease");
 		return false;
@@ -1562,7 +1540,7 @@ static qboolean MCP_BeginMutation (char *op, char *line, char *id,
 	unsigned *hash)
 {
 	*hash = MCP_HashRequest (op, line);
-	if (MCP_LookupReceipt (line, id))
+	if (MCP_LookupReceipt (line, id, *hash))
 		return false;
 	if (!MCP_CheckPreconditions (line, id))
 		return false;
@@ -1770,10 +1748,9 @@ static void MCP_HandleLine (char *line)
 					"physical buttons held");
 				return;
 			}
-			if (!mcp_lease_active)
+			if (!MCP_LeaseHeld ())
 			{
 				mcp_control_rev++;
-				mcp_lease_active = 1;
 				mcp_lease_seq = 0;
 				snprintf (mcp_lease_id, sizeof (mcp_lease_id),
 					"l%d-%d", mcp_epoch, mcp_control_rev);
@@ -1837,7 +1814,7 @@ static void MCP_HandleLine (char *line)
 
 		// a beat must name the live lease: it may not resurrect a
 		// revoked one or keep a foreign controller alive
-		if (!mcp_lease_active || mcp_lease_id[0] == 0)
+		if (!MCP_LeaseHeld ())
 		{
 			MCP_Reply (id, false, "STALE_STATE", "no lease");
 			return;
@@ -2162,7 +2139,6 @@ void MCP_Init (void)
 
 	mcp_epoch = (int)getpid ();
 	mcp_control_rev = 0;
-	mcp_lease_active = 0;
 	mcp_lease_id[0] = 0;
 	mcp_lease_seq = 0;
 	mcp_lease_lastbeat = 0;
