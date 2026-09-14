@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
                                 "src"))
 
-from quakemcp import server
+from quakemcp import lifecycle, server
 from quakemcp.models import EngineDisconnected
 
 
@@ -51,6 +51,14 @@ class DisconnectedClient:
 
     def send_retrying(self, op, **kw):
         raise EngineDisconnected("boom")
+
+    def close(self):
+        pass
+
+
+class SilentClient:
+    def send(self, op, **kw):
+        return {"ok": True, "result": {}}
 
     def close(self):
         pass
@@ -104,3 +112,26 @@ def test_mutate_wraps_engine_disconnect():
         assert False, "expected ValueError"
     except ValueError as e:
         assert str(e) == "ENGINE_DISCONNECTED: boom"
+
+
+def test_instance_stop_keepalive_clears_thread():
+    """A stopped beat must clear the thread handle: _mutate restarts the
+    beat from exactly that flag, so a stale handle means a lease that is
+    never beaten again."""
+    inst = lifecycle.Instance("qtest", -1, 1, "tok", owned=False)
+    inst._hb_thread = object()
+    inst.stop_keepalive()
+    assert inst._hb_thread is None
+
+
+def test_mutate_restarts_stopped_beat():
+    inst = lifecycle.Instance("qtest", -1, 1, "tok", owned=False)
+    inst.client = lambda: SilentClient()
+    inst.lease = "l1-1"
+    inst.epoch = 7
+    inst.keepalive(inst.lease, inst.epoch)
+    inst.stop_keepalive()
+    assert inst._hb_thread is None
+    server._mutate(inst, "key", key="27", down="1")
+    assert inst._hb_thread is not None
+    inst.stop_keepalive()

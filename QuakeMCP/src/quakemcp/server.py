@@ -167,6 +167,13 @@ async def _cancel_releases(inst):
     except anyio.get_cancelled_exc_class():
         with anyio.CancelScope(shield=True):
             await anyio.to_thread.run_sync(_emergency_release, inst)
+            # the release revoked the engine-side lease: drop the local
+            # copy and the beat, exactly like quake_release does, so the
+            # next mutation lazily acquires instead of trusting a dead id
+            inst.stop_keepalive()
+            inst.lease = ""
+            inst.epoch = 0
+            inst.next_seq = 0
         raise
 
 

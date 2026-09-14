@@ -48,7 +48,7 @@ class Inst:
         pass
 
     def stop_keepalive(self):
-        pass
+        self._hb_thread = None
 
 
 def test_cancelled_tool_sends_emergency_release():
@@ -69,3 +69,7 @@ def test_cancelled_tool_sends_emergency_release():
 
     anyio.run(main)
     assert "release" in record
+    # the emergency path must leave the instance as clean as quake_release
+    # does, or the next mutation trusts a revoked lease and fails once
+    assert inst.lease == "" and inst.epoch == 0 and inst.next_seq == 0
+    assert inst._hb_thread is None

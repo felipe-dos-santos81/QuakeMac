@@ -93,6 +93,7 @@ class Instance:
         if self._hb_stop is not None:
             self._hb_stop.set()
             self._hb_stop = None
+        self._hb_thread = None
 
     def stop(self):
         self.stop_keepalive()
