@@ -112,6 +112,20 @@ def bridge():
             os.unlink(path)
 
 
+def _poll_output(bridge, needle, timeout=5):
+    """The exec reply predates Cbuf_Execute; poll the ring for its output."""
+    deadline = time.time() + timeout
+    output = ""
+    while time.time() < deadline:
+        reply = bridge.op(id="tail", op="tail")
+        assert reply["ok"] is True, reply
+        output = reply["result"]["output"]
+        if needle in output:
+            break
+        time.sleep(0.05)
+    return output
+
+
 def test_exec_without_lease_is_stale(bridge):
     reply = bridge.op(id="1", op="exec", text="god", seq="1")
     assert reply["ok"] is False, reply
@@ -194,3 +208,23 @@ def test_exec_text_is_required(bridge):
     # validation precedes the envelope: neither rejection spent seq 1
     ok = bridge.op(id="3", op="exec", text="god", seq="1", **env)
     assert ok["ok"] is True, ok
+
+
+def test_parser_value_does_not_impersonate_a_key(bridge):
+    """A value equal to a later key name must not divert the lookup."""
+    lease, epoch = bridge.acquire()
+    reply = bridge.op(id="1", op="exec", pad="text", zz="9",
+                      text="echo MARKER", seq="1", lease=lease,
+                      epoch=str(epoch))
+    assert reply["ok"] is True, reply
+    output = _poll_output(bridge, "MARKER")
+    assert "MARKER" in output, output
+
+
+def test_parser_escaped_quotes_still_decode(bridge):
+    lease, epoch = bridge.acquire()
+    reply = bridge.op(id="1", op="exec", text='echo "A B"', seq="1",
+                      lease=lease, epoch=str(epoch))
+    assert reply["ok"] is True, reply
+    output = _poll_output(bridge, "A B")
+    assert "A B" in output, output
