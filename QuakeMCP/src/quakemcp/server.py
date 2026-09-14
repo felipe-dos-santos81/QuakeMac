@@ -1,8 +1,8 @@
 """QuakeMCP stdio server: FastMCP app with lifecycle tools.
 
-Logs to stderr only — stdout carries MCP traffic. Task 4 registers 4
-tools (quake_status/start/attach/stop); the other 8 land in Tasks 5-8.
-Unregistered tools must NOT appear in tools/list.
+Logs to stderr only — stdout carries MCP traffic. Task 4 registered the
+4 lifecycle tools; Task 5 added quake_act, Task 6 quake_state. The rest
+land in Tasks 7-8. Unregistered tools must NOT appear in tools/list.
 """
 import sys
 import traceback
@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from . import lifecycle
-from .models import EngineDisconnected, QuakeMCPError
+from .models import EngineDisconnected, Observation, QuakeMCPError
 
 mcp = FastMCP("quakemcp")
 
@@ -44,6 +44,41 @@ def quake_status(instance: str = "") -> dict:
         "ready") is True
     return {"instance": instance, "pid": inst.pid, "owned": inst.owned,
             "bridge_ready": ready}
+
+
+@mcp.tool(annotations=RO_TRUE)
+def quake_state(instance: str) -> dict:
+    """Return one read-only engine state snapshot.
+
+    Keys: epoch, world_gen, control_rev, frame, time, map, pos, angles,
+    health, ammo, ui, loading, dead, intermission, signon, movemessages.
+    A state snapshot and the pixels of the same frame share `frame`.
+    """
+    if not instance:
+        raise ValueError("ENGINE_DISCONNECTED: no instance")
+    inst = lifecycle.get(instance)
+    if inst is None:
+        raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
+                         % (instance,))
+    try:
+        client = inst.client()
+        try:
+            reply = client.send("state")
+        finally:
+            client.close()
+    except EngineDisconnected as e:
+        raise ValueError("%s: %s" % (e.code, e.detail))
+    if reply.get("ok") is not True:
+        raise ValueError("%s: %s" % (
+            reply.get("error", "ENGINE_DISCONNECTED"),
+            reply.get("detail", "")))
+    state = dict(reply.get("result", {}))
+    state["instance"] = instance
+    obs = Observation(
+        identity={"instance": instance, "epoch": state.get("epoch"),
+                  "frame": state.get("frame")},
+        state=state)
+    return obs.state
 
 
 @mcp.tool(annotations=RO_FALSE)

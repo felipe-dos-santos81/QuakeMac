@@ -85,11 +85,11 @@ class Lease:
 
 @dataclass
 class Observation:
-    """Structured observation payload (Task 6 keys land in state group).
+    """Structured observation payload (Task 6 froze the state group).
 
-    Identity group is required at construction; remaining groups are
-    plain dicts validated for presence of required keys as Tasks 6/7
-    freeze them.
+    Identity and state groups are required at construction; the timing,
+    image and telemetry groups are validated for presence of required
+    keys as Tasks 7 freezes them.
     """
 
     identity: dict = field(default_factory=dict)
@@ -103,6 +103,9 @@ class Observation:
                    if k not in self.identity]
         if missing:
             raise ValueError("identity missing keys: %s" % (missing,))
+        missing = [k for k in REQUIRED_STATE_KEYS if k not in self.state]
+        if missing:
+            raise ValueError("state missing keys: %s" % (missing,))
 
 
 def validate_line(obj):

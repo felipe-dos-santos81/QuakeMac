@@ -78,6 +78,12 @@ static double	mcp_act_duration;	// seconds requested (MCP_ACT_DURATION)
 static char	mcp_act_id[128];
 static char	mcp_act_aid[128];	// action_id echo
 
+// World generation (Task 6): bumped from MCP_Poll by watching for a
+// spawn (map name change or sv.time reset), no extra engine hooks.
+static int	mcp_world_gen;
+static char	mcp_last_map[64];
+static double	mcp_last_svtime;
+
 
 /*
 ==================
@@ -598,6 +604,27 @@ static void MCP_CheckAction (void)
 
 /*
 ==================
+MCP_UpdateWorldGen
+
+Bump the world generation when a new world becomes active. SV_SpawnServer
+resets sv.time to 1.0 and sets sv.name, so either a backwards jump in
+sv.time (same-map reload/restart) or a map-name change is a new world.
+The observed name/time are refreshed every poll, so ordinary play-time
+growth is never mistaken for a spawn. Runs in MCP_Poll only; no engine
+hooks.
+==================
+*/
+static void MCP_UpdateWorldGen (void)
+{
+	if (strcmp (sv.name, mcp_last_map) != 0 || sv.time < mcp_last_svtime)
+		mcp_world_gen++;
+	strncpy (mcp_last_map, sv.name, sizeof (mcp_last_map) - 1);
+	mcp_last_map[sizeof (mcp_last_map) - 1] = 0;
+	mcp_last_svtime = sv.time;
+}
+
+/*
+==================
 MCP_CheckLease
 
 Expire the controller lease after 2 s without a heartbeat. Expiry
@@ -630,7 +657,7 @@ static void MCP_HandleLine (char *line)
 	char text[MCP_EXEC_MAX + 1];
 	char name[128], value[1024];
 	char tail[8192], esctail[8192 * 2], result[MCP_REPLY_MAX];
-	char escval[2048];
+	char escval[2048], escmap[256];
 	cvar_t *var;
 	int r;
 
@@ -753,6 +780,41 @@ static void MCP_HandleLine (char *line)
 	{
 		mcp_lease_lastbeat = Sys_DoubleTime ();
 		MCP_Reply (id, true, NULL, "\"ok\":true");
+		return;
+	}
+
+	if (!strcmp (op, "state"))
+	{
+		float *org, *ang;
+		int viewent, health, ammo;
+
+		// single read-only snapshot on the main thread; cl.viewentity
+		// can index out of range before a world is loaded
+		viewent = cl.viewentity;
+		if (viewent < 0 || viewent >= MAX_EDICTS)
+			viewent = 0;
+		org = cl_entities[viewent].origin;
+		ang = cl_entities[viewent].angles;
+		health = cl.stats[STAT_HEALTH];
+		ammo = cl.stats[STAT_AMMO];
+		MCP_Escape (escmap, sizeof (escmap), sv.name);
+		snprintf (result, sizeof (result),
+			"\"epoch\":%d,\"world_gen\":%d,\"control_rev\":%d,"
+			"\"frame\":%u,\"time\":%.3f,\"map\":\"%s\","
+			"\"pos\":[%.2f,%.2f,%.2f],"
+			"\"angles\":[%.2f,%.2f,%.2f],"
+			"\"health\":%d,\"ammo\":%d,\"ui\":%d,"
+			"\"loading\":%s,\"dead\":%s,\"intermission\":%s,"
+			"\"signon\":%d,\"movemessages\":%d",
+			mcp_epoch, mcp_world_gen, mcp_control_rev,
+			MCP_FrameId (), host_time, escmap,
+			org[0], org[1], org[2], ang[0], ang[1], ang[2],
+			health, ammo, (int)key_dest,
+			scr_disabled_for_loading ? "true" : "false",
+			health <= 0 ? "true" : "false",
+			cl.intermission ? "true" : "false",
+			cls.signon, cl.movemessages);
+		MCP_Reply (id, true, NULL, result);
 		return;
 	}
 
@@ -958,6 +1020,9 @@ void MCP_Init (void)
 	mcp_lease_seq = 0;
 	mcp_lease_lastbeat = 0;
 	mcp_act_active = 0;
+	mcp_world_gen = 0;
+	mcp_last_map[0] = 0;
+	mcp_last_svtime = 0;
 }
 
 /*
@@ -977,6 +1042,7 @@ void MCP_Poll (void)
 	if (!mcp_enabled.value)
 		return;
 
+	MCP_UpdateWorldGen ();
 	MCP_CheckAction ();
 	MCP_CheckLease ();
 

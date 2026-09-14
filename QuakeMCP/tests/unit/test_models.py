@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
                                 "src"))
 
 from quakemcp.models import (ERROR_CODES, KNOWN_OPS, Observation,
-                             QuakeMCPError, validate_line)
+                             QuakeMCPError, REQUIRED_STATE_KEYS,
+                             validate_line)
 
 
 def test_error_enum_has_all_13_codes():
@@ -48,8 +49,18 @@ def test_observation_requires_identity_keys():
         Observation(identity={})
     with pytest.raises(ValueError):
         Observation(identity={"instance": "q1"})
-    obs = Observation(identity={"instance": "q1", "epoch": 1, "frame": 7})
+    # identity complete but state group missing -> rejected (Task 6)
+    with pytest.raises(ValueError):
+        Observation(identity={"instance": "q1", "epoch": 1, "frame": 7})
+    state = {k: 0 for k in REQUIRED_STATE_KEYS}
+    state["instance"] = "q1"
+    obs = Observation(identity={"instance": "q1", "epoch": 1, "frame": 7},
+                      state=state)
     assert obs.identity["frame"] == 7
+    del state["health"]
+    with pytest.raises(ValueError):
+        Observation(identity={"instance": "q1", "epoch": 1, "frame": 7},
+                    state=state)
 
 
 def test_tool_error_carries_code():
