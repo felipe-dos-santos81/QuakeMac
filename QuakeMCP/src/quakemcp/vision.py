@@ -39,7 +39,7 @@ def apply_telemetry(payload, mode):
     pixels_only: gameplay telemetry and derived flags are removed.
     """
     if mode not in ("hud", "pixels_only"):
-        raise ValueError("telemetry must be hud|pixels_only")
+        raise ValueError("INVALID_CONTEXT: telemetry must be hud|pixels_only")
     out = dict(payload)
     if mode == "pixels_only":
         for key in GAMEPLAY_TELEMETRY_KEYS:
@@ -51,10 +51,11 @@ def _validate_crop(rect, w, h, hud_rect, allow_hud_crop):
     if not (isinstance(rect, (list, tuple)) and len(rect) == 4
             and all(isinstance(v, int) and not isinstance(v, bool)
                     for v in rect)):
-        raise BadCrop("crop must be four integers x,y,w,h")
+        raise BadCrop("INVALID_CONTEXT: crop must be four integers x,y,w,h")
     x, y, cw, ch = rect
     if cw <= 0 or ch <= 0 or x < 0 or y < 0 or x + cw > w or y + ch > h:
-        raise BadCrop("crop %r outside the %dx%d frame" % (list(rect), w, h))
+        raise BadCrop("INVALID_CONTEXT: crop %r outside the %dx%d frame"
+                      % (list(rect), w, h))
     if hud_rect and not allow_hud_crop:
         hx, hy, hw, hh = hud_rect
         if hw > 0 and hh > 0:
@@ -62,19 +63,20 @@ def _validate_crop(rect, w, h, hud_rect, allow_hud_crop):
                          and x + cw >= hx + hw and y + ch >= hy + hh)
             if not keeps_hud:
                 raise BadCrop(
-                    "crop removes the HUD strip; pass allow_hud_crop=True "
-                    "to crop it out explicitly")
+                    "POLICY_DENIED: crop removes the HUD strip; pass "
+                    "allow_hud_crop=True to crop it out explicitly")
 
 
 def encode_frame(rgb, w, h, longest_edge=1280, fmt="png", crop=None,
                  hud_rect=None, allow_hud_crop=False):
     """Encode one raw frame. Returns (encoded_bytes, transform_report)."""
     if not isinstance(rgb, (bytes, bytearray)) or len(rgb) != w * h * 3:
-        raise ValueError("rgb must be exactly %d bytes" % (w * h * 3))
+        raise ValueError("INVALID_CONTEXT: rgb must be exactly %d bytes"
+                         % (w * h * 3))
     if fmt not in ENCODINGS:
-        raise ValueError("unsupported encoding %r" % (fmt,))
+        raise ValueError("INVALID_CONTEXT: unsupported encoding %r" % (fmt,))
     if longest_edge < 1:
-        raise ValueError("longest_edge must be positive")
+        raise ValueError("INVALID_CONTEXT: longest_edge must be positive")
 
     img = Image.frombytes("RGB", (w, h), bytes(rgb))
     img = img.transpose(Image.FLIP_TOP_BOTTOM)  # bottom-up -> top-down
@@ -99,8 +101,9 @@ def encode_frame(rgb, w, h, longest_edge=1280, fmt="png", crop=None,
     encoded = buf.getvalue()
     if len(encoded) > MAX_ENCODED_BYTES:
         raise ImageTooLarge(
-            "encoded %s frame is %d bytes (cap %d): reduce longest_edge, "
-            "use jpeg, or crop" % (fmt, len(encoded), MAX_ENCODED_BYTES))
+            "POLICY_DENIED: encoded %s frame is %d bytes (cap %d): reduce "
+            "longest_edge, use jpeg, or crop"
+            % (fmt, len(encoded), MAX_ENCODED_BYTES))
 
     report = {
         "src_w": w,
