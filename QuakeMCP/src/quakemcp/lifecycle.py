@@ -28,6 +28,7 @@ PROFILES = {
     "local": {
         "exe": os.path.join("Quake", "build-macosx", "glquake"),
         "args": ["-basedir", "game"],
+        "basedir": "game",
     },
 }
 
@@ -45,6 +46,13 @@ class Instance:
 
     def client(self):
         return BridgeClient("127.0.0.1", self.port, self.token)
+
+    def basedir(self):
+        """Game data root for owned profiles; None when attach cannot know it."""
+        profile = PROFILES.get(self.profile_id)
+        if not profile or not profile.get("basedir"):
+            return None
+        return os.path.join(_repo_root(), profile["basedir"])
 
     def stop(self):
         if not self.owned:

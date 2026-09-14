@@ -6,7 +6,11 @@ land in Tasks 7-8. Unregistered tools must NOT appear in tools/list.
 """
 import base64
 import json
+import os
+import re
+import struct
 import sys
+import time
 import traceback
 
 from mcp.server.fastmcp import FastMCP
@@ -25,15 +29,255 @@ RO_FALSE = ToolAnnotations(readOnlyHint=False)
 RO_FALSE_STOP = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 
-@mcp.tool(annotations=RO_TRUE)
-def quake_status(instance: str = "") -> dict:
-    """Report connection, instance and controller state."""
+# ---- guarded console / config policy (Task 8) -------------------------------
+#
+# Raw console scripting stays disabled: quake_console takes a registered
+# command plus validated argument tokens, never a free-form string. The
+# allowlist mirrors what the design's console tool may run; every other
+# command is POLICY_DENIED before it reaches the engine.
+
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_MAP_RE = re.compile(r"^[A-Za-z0-9_*-]{1,64}$")
+_SLOT_RE = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
+_GIVE_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
+_CONNECT_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+# command -> (arg count, validator name or None)
+CONSOLE_COMMANDS = {
+    "status": (0, None),
+    "version": (0, None),
+    "skill": (1, "skill"),
+    "god": (0, None),
+    "noclip": (0, None),
+    "give": (1, "give"),
+    "impulse": (1, "impulse"),
+    "kill": (0, None),
+    "pause": (1, "pause"),
+    "save": (1, "slot"),
+    "load": (1, "slot"),
+    "map": (1, "map"),
+    "restart": (0, None),
+    "changelevel": (1, "map"),
+    "connect": (1, "connect"),
+    "disconnect": (0, None),
+    "quit": (0, None),
+    "screenshot": (0, None),
+    "toggleconsole": (0, None),
+}
+
+# Curated settings from the engine's real cvar set: input, view, audio,
+# and the accessibility knobs. `access_*` names are readable but only the
+# allowlisted ones writable (several hold command strings).
+CONFIG_CVARS = frozenset({
+    "sensitivity", "m_pitch", "m_yaw", "m_forward", "m_side", "m_filter",
+    "lookspring", "lookstrafe", "in_mouse", "in_dgamouse",
+    "cl_forwardspeed", "cl_backspeed", "cl_sidespeed", "cl_upspeed",
+    "cl_movespeedkey", "cl_yawspeed", "cl_pitchspeed", "cl_anglespeedkey",
+    "cl_autofire", "cl_bob", "cl_bobcycle", "cl_bobup", "cl_rollangle",
+    "cl_rollspeed", "cl_pitchdriftspeed",
+    "scr_viewsize", "scr_fov", "scr_conspeed", "scr_centertime",
+    "scr_showpause", "scr_showram", "scr_showturtle", "crosshair",
+    "gl_triplebuffer", "gl_picmip", "gl_ztrick", "gl_finish", "gl_clear",
+    "gl_subdivide_size", "gl_max_size", "gl_affinemodels", "gl_smoothmodels",
+    "gl_polyblend", "gl_flashblend",
+    "host_maxfps", "host_timescale", "v_gamma", "vid_mode",
+    "volume", "bgmvolume", "_snd_mixahead", "bgmbuffer", "loadas8bit",
+    "ambient_level", "ambient_fade", "snd_noextraupdate",
+})
+CONFIG_ACCESS_PREFIX = "access_"
+CONFIG_ACCESS_WRITE = frozenset({"access_mouseonly"})
+
+KEY_CODES = {
+    "escape": 27, "enter": 13, "space": 32, "tab": 9, "backspace": 127,
+    "up": 128, "down": 129, "left": 130, "right": 131,
+    "ins": 147, "del": 148, "pgdn": 149, "pgup": 150, "home": 151,
+    "end": 152, "pause": 255,
+}
+KEY_CODES.update({"f%d" % n: 134 + n for n in range(1, 13)})
+
+UI_CONTEXTS = {"game": 0, "console": 1, "message": 2, "menu": 3}
+
+SAVE_WAIT_SECS = 10.0
+WORLD_WAIT_SECS = 30.0
+
+
+def _instance(instance):
     if not instance:
         raise ValueError("ENGINE_DISCONNECTED: no instance")
     inst = lifecycle.get(instance)
     if inst is None:
         raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
                          % (instance,))
+    return inst
+
+
+def _bridge(inst, op, **kw):
+    """One authenticated bridge round trip. Raises on transport failure."""
+    try:
+        client = inst.client()
+        try:
+            return client.send(op, **kw)
+        finally:
+            client.close()
+    except EngineDisconnected as e:
+        raise ValueError("%s: %s" % (e.code, e.detail))
+
+
+def _bridge_ok(inst, op, **kw):
+    reply = _bridge(inst, op, **kw)
+    if reply.get("ok") is not True:
+        raise ValueError("%s: %s" % (
+            reply.get("error", "ENGINE_DISCONNECTED"),
+            reply.get("detail", "")))
+    return reply.get("result", {})
+
+
+def _tail(inst):
+    """Current console tail (exec with an empty line)."""
+    return _bridge_ok(inst, "exec", text="").get("output", "")
+
+
+def _state(inst):
+    return _bridge_ok(inst, "state")
+
+
+def _gamedir(inst):
+    basedir = inst.basedir()
+    if basedir is None:
+        raise ValueError("UNSUPPORTED_CAPABILITY: gamedir unknown for "
+                         "attached instances")
+    return os.path.join(basedir, "id1")
+
+
+def _pak_names(gamedir):
+    """Entry names from pak0..pakN directories (no payload reads).
+
+    Quake pak: 12-byte header ('PACK', little-endian dirofs/dirlen) then
+    64-byte entries (56-byte name, offset, length). Loose files are not
+    included here.
+    """
+    names = []
+    index = 0
+    while True:
+        path = os.path.join(gamedir, "pak%d.pak" % index)
+        if not os.path.exists(path):
+            break
+        with open(path, "rb") as fh:
+            header = fh.read(12)
+            if len(header) != 12 or header[:4] != b"PACK":
+                raise ValueError("INVALID_CONTEXT: %s is not a pak file"
+                                 % os.path.basename(path))
+            dirofs, dirlen = struct.unpack("<ii", header[4:12])
+            if dirlen < 0 or dirlen % 64 or dirlen > 64 * 1024 * 1024:
+                raise ValueError("INVALID_CONTEXT: bad pak directory in %s"
+                                 % os.path.basename(path))
+            fh.seek(dirofs)
+            directory = fh.read(dirlen)
+        if len(directory) != dirlen:
+            raise ValueError("INVALID_CONTEXT: truncated pak directory in %s"
+                             % os.path.basename(path))
+        for i in range(0, dirlen, 64):
+            raw = directory[i:i + 56].split(b"\x00", 1)[0]
+            names.append(raw.decode("ascii", "replace"))
+        index += 1
+    return names
+
+
+def _list_maps(inst):
+    gamedir = _gamedir(inst)
+    names = set()
+    for entry in _pak_names(gamedir):
+        if entry.lower().startswith("maps/") \
+                and entry.lower().endswith(".bsp"):
+            names.add(os.path.basename(entry)[:-4])
+    for name in os.listdir(gamedir):
+        if name.lower().endswith(".bsp"):
+            names.add(name[:-4])
+    return sorted(names)
+
+
+def _list_saves(inst):
+    gamedir = _gamedir(inst)
+    names = []
+    for name in sorted(os.listdir(gamedir)):
+        if name.lower().endswith(".sav"):
+            names.append(name[:-4])
+    return names
+
+
+def _save_path(inst, slot):
+    return os.path.join(_gamedir(inst), slot + ".sav")
+
+
+def _map_id(value):
+    if not _MAP_RE.match(value) or ".." in value:
+        raise ValueError("POLICY_DENIED: bad map id %r" % (value,))
+    return value
+
+
+def _save_slot(value):
+    if not _SLOT_RE.match(value):
+        raise ValueError("POLICY_DENIED: bad save slot %r" % (value,))
+    return value
+
+
+def _console_arg(validator, value):
+    if validator == "skill":
+        if value not in ("0", "1", "2", "3"):
+            raise ValueError("INVALID_CONTEXT: skill must be 0..3")
+    elif validator == "impulse":
+        if not value.isdigit() or not 0 <= int(value) <= 255:
+            raise ValueError("INVALID_CONTEXT: impulse must be 0..255")
+    elif validator == "pause":
+        if value not in ("0", "1"):
+            raise ValueError("INVALID_CONTEXT: pause must be 0 or 1")
+    elif validator == "give":
+        if not _GIVE_RE.match(value):
+            raise ValueError("POLICY_DENIED: bad give item %r" % (value,))
+    elif validator == "slot":
+        _save_slot(value)
+    elif validator == "map":
+        _map_id(value)
+    elif validator == "connect":
+        if not _CONNECT_RE.match(value) or ".." in value:
+            raise ValueError("POLICY_DENIED: bad connect target %r" % (value,))
+    return value
+
+
+def _console_line(command, args):
+    spec = CONSOLE_COMMANDS.get(command)
+    if spec is None:
+        raise ValueError("POLICY_DENIED: command %r not allowed" % (command,))
+    count, validator = spec
+    args = list(args)
+    if len(args) != count:
+        raise ValueError("INVALID_CONTEXT: %s takes %d argument(s)"
+                         % (command, count))
+    checked = [_console_arg(validator, str(a)) for a in args] if count else []
+    return " ".join([command] + checked)
+
+
+def _config_known(name):
+    return name in CONFIG_CVARS or name.startswith(CONFIG_ACCESS_PREFIX)
+
+
+def _wait_world(inst, before, timeout=WORLD_WAIT_SECS):
+    """Wait for a loaded world that is actually accepting input."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = _state(inst)
+        if (last["world_gen"] > before and last["signon"] == 4
+                and last["movemessages"] > 2):
+            return last
+        time.sleep(0.25)
+    raise ValueError("ACTION_TIMEOUT: world did not become ready: %r" % (last,))
+
+
+@mcp.tool(annotations=RO_TRUE)
+def quake_status(instance: str = "") -> dict:
+    """Report connection, instance and controller state."""
+    inst = _instance(instance)
     reply = None
     try:
         client = inst.client()
@@ -58,12 +302,7 @@ def quake_state(instance: str) -> StateOut:
     health, ammo, ui, loading, dead, intermission, signon, movemessages.
     A state snapshot and the pixels of the same frame share `frame`.
     """
-    if not instance:
-        raise ValueError("ENGINE_DISCONNECTED: no instance")
-    inst = lifecycle.get(instance)
-    if inst is None:
-        raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
-                         % (instance,))
+    inst = _instance(instance)
     try:
         client = inst.client()
         try:
@@ -212,12 +451,7 @@ def quake_observe(
     allow_hud_crop is true. telemetry hud (default) keeps health/ammo;
     pixels_only removes gameplay telemetry and derived flags.
     """
-    if not instance:
-        raise ValueError("ENGINE_DISCONNECTED: no instance")
-    inst = lifecycle.get(instance)
-    if inst is None:
-        raise ValueError("ENGINE_DISCONNECTED: unknown instance %r"
-                         % (instance,))
+    inst = _instance(instance)
     if image_format not in vision.ENCODINGS:
         raise ValueError("INVALID_CONTEXT: image_format must be png|jpeg")
     if telemetry not in ("hud", "pixels_only"):
@@ -366,6 +600,207 @@ def quake_act(
                  _caption(structured)],
         structuredContent=structured,
         isError=False)
+
+
+@mcp.tool(annotations=RO_FALSE)
+def quake_game(instance: str, operation: str, map_id: str = "",
+               slot: str = "", overwrite: bool = False) -> dict:
+    """Run a typed game-lifecycle operation.
+
+    new_game -> map start, restart -> restart, load_map {map_id},
+    save {slot} (refuses to replace without overwrite=true), load {slot},
+    list_maps / list_saves (gamedir inventory). Completion means the world
+    generation advanced and the client is accepting input (new_game,
+    restart, load_map, load) or the save file was written. `respawn` is
+    unsupported until its death-flow semantics are verified.
+    """
+    inst = _instance(instance)
+    if operation == "list_maps":
+        return {"operation": operation, "maps": _list_maps(inst)}
+    if operation == "list_saves":
+        return {"operation": operation, "saves": _list_saves(inst)}
+    if operation == "respawn":
+        raise ValueError("UNSUPPORTED_CAPABILITY: respawn semantics "
+                         "unverified")
+    if operation == "new_game":
+        return _world_op(inst, operation, "map start")
+    if operation == "restart":
+        return _world_op(inst, operation, "restart")
+    if operation == "load_map":
+        mid = _map_id(map_id)
+        if mid not in _list_maps(inst):
+            raise ValueError("INVALID_CONTEXT: unknown map %r" % (mid,))
+        return _world_op(inst, operation, "map %s" % mid)
+    if operation == "save":
+        name = _save_slot(slot)
+        path = _save_path(inst, name)
+        if os.path.exists(path) and not overwrite:
+            raise ValueError("INVALID_CONTEXT: %s exists; pass overwrite=true"
+                             % name)
+        return _save_op(inst, name, path)
+    if operation == "load":
+        name = _save_slot(slot)
+        if not os.path.exists(_save_path(inst, name)):
+            raise ValueError("INVALID_CONTEXT: no save named %r" % (name,))
+        return _world_op(inst, operation, "load %s" % name)
+    raise ValueError("UNSUPPORTED_CAPABILITY: operation %r" % (operation,))
+
+
+def _world_op(inst, operation, command):
+    before = _state(inst)["world_gen"]
+    _bridge_ok(inst, "exec", text=command)
+    st = _wait_world(inst, before)
+    return {"operation": operation, "world_gen": st["world_gen"],
+            "frame": st["frame"], "map": st["map"], "gameplay_ready": True}
+
+
+SAVE_FAILURES = (
+    "Not playing a local game.",
+    "Can't save in intermission.",
+    "Can't save multiplayer games.",
+    "Can't savegame with a dead player",
+    "Relative pathnames are not allowed.",
+    "ERROR: couldn't open.",
+)
+
+
+def _save_op(inst, slot, path):
+    _bridge_ok(inst, "exec", text="save %s" % slot)
+    deadline = time.time() + SAVE_WAIT_SECS
+    tail = ""
+    while time.time() < deadline:
+        tail = _tail(inst)
+        if "done." in tail:
+            return {"operation": "save", "slot": slot, "saved": True,
+                    "file": path}
+        for bad in SAVE_FAILURES:
+            if bad in tail:
+                raise ValueError("NOT_READY: %s" % (bad,))
+        time.sleep(0.25)
+    raise ValueError("ACTION_TIMEOUT: save %s did not complete: %r"
+                     % (slot, tail[-200:]))
+
+
+@mcp.tool(annotations=RO_FALSE)
+def quake_config(instance: str, operation: str, name: str,
+                 value: str = "") -> dict:
+    """Read or write one allowlisted engine setting (effective value).
+
+    Only declared input/view/audio/access settings are reachable; unknown
+    names are INVALID_CONTEXT and known-but-read-only ones POLICY_DENIED.
+    """
+    inst = _instance(instance)
+    if operation not in ("get", "set"):
+        raise ValueError("INVALID_CONTEXT: operation must be get|set")
+    if not name or not _TOKEN_RE.match(name):
+        raise ValueError("INVALID_CONTEXT: bad setting name %r" % (name,))
+    if operation == "get":
+        if not _config_known(name):
+            raise ValueError("INVALID_CONTEXT: unknown setting %r" % (name,))
+        res = _bridge_ok(inst, "cvar", name=name)
+        return {"operation": operation, "name": name,
+                "value": res.get("value")}
+    writable = (name in CONFIG_CVARS
+                or name in CONFIG_ACCESS_WRITE)
+    if not writable:
+        if _config_known(name):
+            raise ValueError("POLICY_DENIED: %s is read-only" % (name,))
+        raise ValueError("INVALID_CONTEXT: unknown setting %r" % (name,))
+    if len(value) > 128 or any(ord(ch) < 32 for ch in value):
+        raise ValueError("INVALID_CONTEXT: bad setting value")
+    res = _bridge_ok(inst, "cvar", name=name, value=value)
+    return {"operation": operation, "name": name, "value": res.get("value")}
+
+
+@mcp.tool(annotations=RO_FALSE)
+def quake_console(instance: str, command: str,
+                  args: list[str] = []) -> dict:
+    """Run one allowlisted console command with validated arguments.
+
+    Never accepts a raw command line; anything outside the allowlist is
+    POLICY_DENIED. The returned tail reflects the console as of the
+    reply and can predate the command's own output; poll again to see it.
+    """
+    inst = _instance(instance)
+    line = _console_line(command, args)
+    res = _bridge_ok(inst, "exec", text=line)
+    return {"command": command, "args": list(args),
+            "output": res.get("output", "")}
+
+
+@mcp.tool(annotations=RO_FALSE)
+def quake_ui(instance: str, key: str = "", text: str = "",
+            context: str = "") -> dict:
+    """Deliver UI keys or type into the active text field.
+
+    key is a name (escape/enter/up/down/...) or a single character; the
+    engine receives a key-down/key-up pair. text types only into a live
+    console/chat field and never submits it. context (game|console|
+    message|menu), when given, must match the engine's current UI state.
+    """
+    inst = _instance(instance)
+    if context:
+        want = UI_CONTEXTS.get(context)
+        if want is None:
+            raise ValueError("INVALID_CONTEXT: context must be game|console|"
+                             "message|menu")
+        if _state(inst)["ui"] != want:
+            raise ValueError("NOT_READY: expected %s UI context" % context)
+    if text:
+        if _state(inst)["ui"] not in (1, 2):
+            raise ValueError("INVALID_CONTEXT: no active text field")
+        sent = []
+        for ch in text:
+            if not 32 <= ord(ch) <= 126:
+                raise ValueError("INVALID_CONTEXT: text must be printable "
+                                 "ASCII")
+            _bridge_ok(inst, "key", key=str(ord(ch)), down="1")
+            _bridge_ok(inst, "key", key=str(ord(ch)), down="0")
+            sent.append(ch)
+        return {"typed": len(sent)}
+    if not key:
+        raise ValueError("INVALID_CONTEXT: key or text required")
+    code = KEY_CODES.get(key.lower())
+    if code is None:
+        if len(key) == 1 and 32 <= ord(key) <= 126:
+            code = ord(key)
+        else:
+            raise ValueError("INVALID_CONTEXT: unknown key %r" % (key,))
+    _bridge_ok(inst, "key", key=str(code), down="1")
+    _bridge_ok(inst, "key", key=str(code), down="0")
+    return {"key": key, "code": code}
+
+
+@mcp.tool(annotations=RO_FALSE)
+def quake_control(instance: str, operation: str = "acquire") -> dict:
+    """Acquire/release/detach the controller lease.
+
+    acquire refuses while physical attack/jump buttons are held
+    (CONTROL_BUSY). release and detach are idempotent. Execution modes
+    arrive with stepped mode in Task 9.
+    """
+    inst = _instance(instance)
+    if operation in ("acquire", "release", "detach"):
+        res = _bridge_ok(inst, "control", sub=operation)
+        out = {"operation": operation}
+        for k in ("lease", "epoch", "control_rev", "released"):
+            if k in res:
+                out[k] = res[k]
+        return out
+    if operation == "mode":
+        raise ValueError("UNSUPPORTED_CAPABILITY: execution modes land in "
+                         "Task 9")
+    raise ValueError("INVALID_CONTEXT: operation must be acquire|release|"
+                     "detach|mode")
+
+
+@mcp.tool(annotations=RO_FALSE)
+def quake_release(instance: str, reason: str = "") -> dict:
+    """Priority emergency stop: cancel actions, revoke control, neutralize
+    MCP input. Idempotent and safe with no lease held."""
+    inst = _instance(instance)
+    res = _bridge_ok(inst, "release")
+    return {"released": res.get("released", True), "reason": reason}
 
 
 @mcp.tool(annotations=RO_FALSE_STOP)

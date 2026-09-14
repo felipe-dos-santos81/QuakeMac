@@ -864,6 +864,23 @@ static void MCP_HandleLine (char *line)
 		return;
 	}
 
+	if (!strcmp (op, "key"))
+	{
+		int	key, down;
+
+		key = MCP_FieldInt (line, "key");
+		down = MCP_FieldInt (line, "down");
+		if (key < 0 || key > 255)
+		{
+			MCP_Reply (id, false, "INVALID_CONTEXT", "key out of range");
+			return;
+		}
+		// routes through the normal UI path (key_dest decides who sees it)
+		Key_Event (key, down ? true : false);
+		MCP_Reply (id, true, NULL, "\"ok\":true");
+		return;
+	}
+
 	if (!strcmp (op, "control"))
 	{
 		char sub[64];
@@ -1215,8 +1232,20 @@ void MCP_Poll (void)
 			break;
 		if (mcp_client_fd >= 0)
 		{
-			close (fd);	// single client: keep the first
-			continue;
+			// The control layer opens one connection per call. If the
+			// previous client already said goodbye, reap it and take
+			// this one; a still-live client keeps the endpoint.
+			char probe;
+			int pn;
+
+			pn = recv (mcp_client_fd, &probe, 1, MSG_PEEK);
+			if (!(pn == 0 || (pn < 0 && errno != EAGAIN
+				&& errno != EWOULDBLOCK && errno != EINTR)))
+			{
+				close (fd);
+				continue;
+			}
+			MCP_CloseClient ();
 		}
 		MCP_SetNonblock (fd);
 		mcp_client_fd = fd;

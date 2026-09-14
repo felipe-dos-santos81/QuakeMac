@@ -24,15 +24,17 @@ async def _session():
     return session_cm
 
 
-def test_tools_list_has_exactly_seven():
+def test_tools_list_is_complete():
     async def main():
         async with create_connected_server_and_client_session(mcp) as s:
             await s.initialize()
             tools = await s.list_tools()
             return sorted(t.name for t in tools.tools)
-    assert _run(main()) == ["quake_act", "quake_attach", "quake_observe",
-                            "quake_start", "quake_state", "quake_status",
-                            "quake_stop"]
+    assert _run(main()) == [
+        "quake_act", "quake_attach", "quake_config", "quake_console",
+        "quake_control", "quake_game", "quake_observe", "quake_release",
+        "quake_start", "quake_state", "quake_status", "quake_stop",
+        "quake_ui"]
 
 
 def test_status_no_instance_is_tool_error():
