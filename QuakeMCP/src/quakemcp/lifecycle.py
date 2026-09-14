@@ -95,8 +95,10 @@ class Instance:
 
         A STALE_STATE reply means human takeover, expiry or revocation:
         drop the local lease so status stays truthful and the next
-        mutation lazily acquires a fresh one. Transport errors are
-        transient; keep beating.
+        mutation lazily acquires a fresh one. Only a reply for the
+        generation this round beats for drops; a late reply from a
+        superseded beat stops this thread without touching the newer
+        lease. Transport errors are transient; keep beating.
         """
         try:
             client = self.client()
@@ -110,7 +112,8 @@ class Instance:
             client.close()
         if reply.get("ok") is not True \
                 and reply.get("error") == "STALE_STATE":
-            self.clear_lease()
+            if self.lease == lease and self.epoch == epoch:
+                self.clear_lease()
             return False
         return True
 

@@ -426,11 +426,11 @@ git commit -m "refactor: quakemcp one clear_lease for every lease drop"
 
 **Interfaces:**
 - Consumes: `Instance.clear_lease()` (Task 5).
-- Produces: `Instance._heartbeat_round(lease, epoch) -> bool` — one beat; `False` after a `STALE_STATE` reply, which also clears the lease. Transport errors keep beating (`True`).
+- Produces: `Instance._heartbeat_round(lease, epoch) -> bool` — one beat; `False` after a `STALE_STATE` reply for the generation this round beats for, which also clears the lease (a superseded round stops without touching the newer lease). Transport errors keep beating (`True`).
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `test_lease.py`:
+Append to `test_lease.py` (and add `import threading` to its imports):
 
 ```python
 class _Bridge:
@@ -460,6 +460,19 @@ def test_beat_keeps_beating_on_ok(monkeypatch):
     inst.lease, inst.epoch = "l1-1", 3
     assert inst._heartbeat_round("l1-1", 3) is True
     assert (inst.lease, inst.epoch) == ("l1-1", 3)
+
+
+def test_beat_ignores_stale_reply_for_superseded_generation(monkeypatch):
+    inst = lifecycle.Instance("qtest", -1, 1, "tok", owned=False)
+    inst.lease, inst.epoch, inst.next_seq = "l2-7", 4, 5
+    stop = threading.Event()
+    inst._hb_stop = stop
+    monkeypatch.setattr(lifecycle.Instance, "client", lambda self: _Bridge(
+        {"ok": False, "error": "STALE_STATE"}))
+    assert inst._heartbeat_round("l1-1", 3) is False
+    assert (inst.lease, inst.epoch, inst.next_seq) == ("l2-7", 4, 5)
+    assert inst._hb_stop is stop
+    assert not stop.is_set()
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -503,8 +516,10 @@ and add the method after `keepalive` (before `stop_keepalive`):
 
         A STALE_STATE reply means human takeover, expiry or revocation:
         drop the local lease so status stays truthful and the next
-        mutation lazily acquires a fresh one. Transport errors are
-        transient; keep beating.
+        mutation lazily acquires a fresh one. Only a reply for the
+        generation this round beats for drops; a late reply from a
+        superseded beat stops this thread without touching the newer
+        lease. Transport errors are transient; keep beating.
         """
         try:
             client = self.client()
@@ -518,7 +533,8 @@ and add the method after `keepalive` (before `stop_keepalive`):
             client.close()
         if reply.get("ok") is not True \
                 and reply.get("error") == "STALE_STATE":
-            self.clear_lease()
+            if self.lease == lease and self.epoch == epoch:
+                self.clear_lease()
             return False
         return True
 ```
