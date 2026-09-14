@@ -720,6 +720,9 @@ def test_state_schema_sources_agree():
 
 Run: `python3 -m pytest QuakeMCP/tests/unit/test_models.py::test_state_schema_sources_agree -v`
 Expected: FAIL — `REQUIRED_STATE_KEYS` is a hand-written literal whose order does not match the derivation.
+Correction (Task 14, 2026-09-14): at this tip the hand-written literal
+already matched the derivation, so the test passed pre-change; discrimination
+was proven by mutation, and the derivation shipped as written.
 
 - [ ] **Step 3: Derive the tuple**
 
@@ -882,6 +885,9 @@ def test_parser_value_does_not_impersonate_a_key(bridge):
                       text="echo MARKER", seq="1", lease=lease,
                       epoch=str(epoch))
     assert reply["ok"] is True, reply
+    # Task 14 correction (2026-09-14): the exec reply is formatted in
+    # MCP_Poll before Cbuf_Execute drains the text (host.c:664 vs :685), so
+    # MARKER lands on a later frame; the shipped test polls _poll_output.
     assert "MARKER" in reply["result"]["output"], reply
 
 
@@ -890,6 +896,7 @@ def test_parser_escaped_quotes_still_decode(bridge):
     reply = bridge.op(id="1", op="exec", text='echo "A B"', seq="1",
                       lease=lease, epoch=str(epoch))
     assert reply["ok"] is True, reply
+    # Task 14 correction (2026-09-14): as above, _poll_output reads "A B".
     assert "A B" in reply["result"]["output"], reply
 ```
 
