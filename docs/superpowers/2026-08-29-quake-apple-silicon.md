@@ -1320,3 +1320,32 @@ entry snap and pitch leveling retained. QuakeWorld untouched; kill
 switch access_mouseonly unchanged.
 Validation: make clean && make build-release build-server build-client
 (exit 0); manual session pending.
+
+### QuakeMCP: engine bridge, MCP server, acceptance run (feature)
+Commits: 8a60ea6, 65112a7, fc7f44b, 4101e0c, a849a4b, 5e93f24, 93c61ab,
+9b8e8eb, f3098e6 and the Task 10 fixes. Spec + plan:
+docs/superpowers/2026-09-13-quakemcp-design.md and
+2026-09-13-quakemcp-plan.md. A 13-tool MCP server
+(QuakeMCP/src/quakemcp) supervises the instrumented glquake
+(QuakeMCP/bridge, built with QUAKE_MCP=1) over a token-authenticated
+loopback bridge: lifecycle, lease-guarded bounded actions, exact stepped
+mode, state/vision observation, guarded console/config, save/map
+inventories and receipts for retry safety. Task 10 found and fixed: the
+game child inherited the stdio control channel (server exited cleanly
+mid-call; now stdin=DEVNULL), no server-side lease heartbeat (design
+calls for 500 ms; now a daemon beat, with `hb` validated against the
+live lease), world ops inside a frozen stepped session could not finish
+sign-on (world ops resume realtime and restore the mode), and the
+world-generation poll heuristic missed same-map same-time savegame loads
+(now bumped exactly in SV_SpawnServer, hook `MCP_NoteWorldSpawn`).
+Acceptance: QuakeMCP/docs/acceptance-results.md; 42 tests pass; both
+clean build gates exit 0; SIGKILL smoke 0 "Received signal" for all
+three binaries; two autonomous 10-action observe-act-observe loops ran in
+~6 s with zero errors. Recorded FAIL: `kill` has no observable effect in
+this build (client health unchanged, no console output) so death/respawn
+and intermission reachability stay open; water movement and vision
+usability are PARTIAL. Engine tree only; QuakeWorld untouched.
+Validation: make clean && make build-release build-server build-client
+(exit 0); make clean && make build-release QUAKE_MCP=1 (exit 0);
+python3 -m pytest QuakeMCP/tests/unit QuakeMCP/tests/contract
+QuakeMCP/tests/integration (42 passed).

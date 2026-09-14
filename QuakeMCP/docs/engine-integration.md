@@ -120,3 +120,21 @@ access-module behavior when `access_mouseonly` is 0.
 Death/respawn semantics (`kill`, death state, respawn path) are marked
 **UNVERIFIED**. Task 8 must verify actual engine behavior before the
 `respawn` op is specified. Do not assume `kill` + respawn round-trips.
+
+## Capability matrix (as measured, 2026-09-14)
+
+| Capability | Surface | Measured behavior |
+|---|---|---|
+| Bounded action | `quake_act` -> bridge `act` | Axes forward/strafe/vertical [-1,1] scaled through `cl_forwardspeed`/`cl_sidespeed`/`cl_upspeed`; `run` multiplies by `cl_movespeedkey`. Yaw/pitch deltas applied once, pitch clamped +80/-70. Jump `none`/`tap`/`hold`. Attack and weapon impulse 1..8 carried in the usercmd bits/impulse only; `in_attack`/`in_jump`/`in_impulse` are never written. Wall cap 5 s; tick budget 1..72 counted from completed simulation steps. |
+| Timing modes | `quake_control mode=stepped\|realtime` | Realtime is the default. Stepped freezes `CL_SendCmd`/`Host_ServerFrame`/`host_time` while idle and advances exactly N steps per ticks act; `duration_ms` is refused in stepped mode (`UNSUPPORTED_CAPABILITY`). World-mutating ops temporarily resume realtime and restore stepped. |
+| Axes/turn signs | bridge merge | Forward/right/up positive; positive yaw turns right (`viewangles[YAW] -= delta`); positive pitch looks up (`viewangles[PITCH] -= delta`, engine pitch is positive-down). |
+| Weapon switching | `quake_act weapon_id` | `impulse 1..8`; observed `impulse 1` switching to the axe (current-ammo stat 25 -> 0). |
+| UI keys/text | `quake_ui` | Engine `Key_Event(int, qboolean)` with the fork's key codes; escape opens/closes the menu (state `ui` 0 -> 3 -> 0) and the menu frame is delivered as an image. Text types printable ASCII into a live console/chat field only, never submits. |
+| Console | `quake_console` | Allowlisted commands with typed argument validators (never a raw string): status, version, skill, god, noclip, give, impulse, kill, pause, save, load, map, restart, changelevel, connect, disconnect, quit, screenshot, toggleconsole. `god`, `pause`, `impulse` observed executing; `kill` observed with no effect (see the acceptance matrix). |
+| Settings | `quake_config` | Curated cvar read list plus `access_*` readable; only `access_mouseonly` writable (other access cvars hold command strings). |
+| Frame formats | bridge capture -> `vision.py` | `glReadPixels` raw 8-bit RGB, bottom-up, HUD included; converted to PNG by default (JPEG optional), longest edge 1280 with no upscaling, 2-slot ring, 32 MiB source cap, `GL_PACK_ALIGNMENT` 1. Unavailable readback -> `RENDER_UNAVAILABLE`; no fresh frame -> `FRAME_TIMEOUT`; evicted -> `FRAME_EXPIRED`. |
+| Telemetry policy | `quake_observe`/`quake_act telemetry=` | `hud` (default) keeps health/ammo/dead with provenance; `pixels_only` strips gameplay telemetry and derived dead flag. |
+| State snapshot | `quake_state` / observation state group | epoch, world_gen (exact: bumped in `SV_SpawnServer`), control_rev, frame (completed simulation step), time, map, mode, pos, angles, health, ammo, ui, loading, dead, intermission, signon, movemessages. |
+| Lifecycle | `quake_start`/`status`/`game`/`stop`, `attach` | Owned profile `local` launches the MCP build with `-mcp_port`/`+mcp_enabled 1` and waits for the token + ping; map ids come from validated pak/loose inventories; save slots are confined and traversal-checked; attached instances refuse `stop`. |
+| Controller lease | `quake_control`/`quake_release` | Acquire requires neutral physical attack/jump; server beats every 500 ms; bridge expires after 2 s of silence (an in-flight action defers expiry and refreshes on completion); release/revoke clears synthetic input and is idempotent. |
+| Dedup/retry | bridge receipt ring (64) | Identity `(lease, action_id, epoch)` plus an FNV-1a argument hash; duplicate returns the receipt, different arguments `POLICY_DENIED`, consumed sequence without a ring hit `RESULT_EXPIRED`, precondition mismatch `STALE_STATE`; the Python client retries a dropped connection once only when an action_id is present. |
