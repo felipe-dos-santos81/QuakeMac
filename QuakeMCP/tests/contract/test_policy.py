@@ -258,6 +258,8 @@ def test_status_reports_capabilities(fake, monkeypatch):
             assert key in caps, key
         assert len(caps["tools"]) == 13
         assert caps["actions"]["weapons"] == list(range(1, 9))
+        assert caps["ui"]["keys"] == sorted(models.KEY_CODES)
+        assert "escape" in caps["ui"]["keys"]
         assert "save" not in caps["console"]
     finally:
         lifecycle.forget("qtest")
