@@ -2,6 +2,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
                                 "src"))
 
@@ -100,6 +102,66 @@ def test_mutate_stale_state_drops_lease_and_beat():
     except ValueError as e:
         assert str(e) == "STALE_STATE: lease mismatch"
     assert inst.lease == "" and inst._hb_thread is None
+
+
+@pytest.mark.parametrize("detail", ["world generation mismatch",
+                                    "control revision mismatch"])
+def test_mutate_keeps_lease_on_precondition_mismatch(detail):
+    """A world/control generation mismatch is not a lease failure: the
+    bridge keeps the lease and its sequence high-water, so the local
+    lease, its beat and the sequence counter must all survive. Rewinding
+    here spends a sequence the bridge never consumed and every following
+    mutation re-acquires the same lease and returns RESULT_EXPIRED."""
+    inst = FakeInstance([
+        {"ok": False, "error": "STALE_STATE", "detail": detail},
+        {"ok": True, "result": {"output": "hi"}},
+    ])
+    inst.lease = "l1-1"
+    inst.epoch = 7
+    inst._hb_thread = object()
+    try:
+        server._mutate(inst, "exec", text="god", world_generation=3)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert str(e) == "STALE_STATE: %s" % detail
+    assert inst.lease == "l1-1" and inst._hb_thread is not None
+
+    out = server._mutate(inst, "exec", text="god")
+    assert out == {"output": "hi"}
+    # the rejected call consumed local seq 1 but no engine fence; the
+    # retry continues at 2 with no lazy acquire in between
+    assert len(inst.calls) == 2
+    op, kw = inst.calls[1].sent[0]
+    assert op == "exec" and kw["seq"] == "2" and kw["lease"] == "l1-1"
+
+
+def test_mutate_lazy_acquire_resets_sequence_for_a_new_lease():
+    """A genuinely dead lease is cleared, and the lazy re-acquire of a
+    different lease id opens a fresh sequence fence."""
+    inst = FakeInstance([
+        {"ok": False, "error": "STALE_STATE", "detail": "lease mismatch"},
+        {"ok": True, "result": {"lease": "l2-9", "epoch": 9}},
+        {"ok": True, "result": {"output": "hi"}},
+    ])
+    inst.lease = "l1-1"
+    inst.epoch = 7
+    inst.next_seq = 5
+    inst._hb_thread = object()
+    try:
+        server._mutate(inst, "exec", text="god")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert str(e) == "STALE_STATE: lease mismatch"
+    assert inst.lease == "" and inst._hb_thread is None
+
+    out = server._mutate(inst, "exec", text="god")
+    assert out == {"output": "hi"}
+    first_op, _ = inst.calls[0].sent[0]
+    acquire_op, _ = inst.calls[1].sent[0]
+    exec_op, kw = inst.calls[2].sent[0]
+    assert first_op == "exec" and acquire_op == "control" and exec_op == "exec"
+    assert kw["lease"] == "l2-9" and kw["seq"] == "1"
+    assert inst.next_seq == 1
 
 
 def test_mutate_wraps_engine_disconnect():

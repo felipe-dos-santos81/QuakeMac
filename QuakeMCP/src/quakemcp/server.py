@@ -120,6 +120,15 @@ async def _cancel_releases(inst):
         raise
 
 
+# The two pinned bridge STALE_STATE details that do not revoke the lease:
+# a world/control generation mismatch refuses the mutation, but the
+# controller keeps its lease and the engine keeps the lease's sequence
+# high-water. Every other STALE_STATE (`no lease`, `lease mismatch`,
+# `epoch mismatch`) means the lease itself is gone.
+PRECONDITION_MISMATCHES = ("world generation mismatch",
+                           "control revision mismatch")
+
+
 def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
             world_generation=0, control_revision=0, **args):
     """Send one mutation under the controller lease envelope.
@@ -133,9 +142,15 @@ def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
     epoch = epoch or inst.epoch
     if not lease or not epoch:
         res = _bridge_ok(inst, "control", sub="acquire")
-        lease = res.get("lease", "")
+        acquired = res.get("lease", "")
         epoch = res.get("epoch", 0)
-        inst.next_seq = 0
+        # a same-lease re-acquire means the bridge kept its sequence
+        # high-water; rewinding here would spend a sequence the engine
+        # never consumed and the next mutation would be RESULT_EXPIRED.
+        # Only a lease this instance has never used starts a fresh fence.
+        if acquired != inst.lease:
+            inst.next_seq = 0
+        lease = acquired
     inst.lease, inst.epoch = lease, epoch
     if not getattr(inst, "_hb_thread", None):
         inst.keepalive(lease, epoch)
@@ -163,10 +178,11 @@ def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
         raise ValueError("%s: %s" % (e.code, e.detail))
     if reply.get("ok") is not True:
         code = reply.get("error", "ENGINE_DISCONNECTED")
-        if code == "STALE_STATE":
+        detail = reply.get("detail", "")
+        if code == "STALE_STATE" and detail not in PRECONDITION_MISMATCHES:
             inst.stop_keepalive()
             inst.lease = ""
-        raise ValueError("%s: %s" % (code, reply.get("detail", "")))
+        raise ValueError("%s: %s" % (code, detail))
     return reply.get("result", {})
 
 
