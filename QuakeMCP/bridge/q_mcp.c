@@ -133,6 +133,23 @@ static int	mcp_world_gen;
 // is sent from MCP_Poll once the frame is captured.
 static char	mcp_observe_id[128];
 
+// Modal interception (Task 6): a key op that opens SCR_ModalMessage gets
+// an immediate needs_input reply instead of blocking the caller. The
+// dialog loop pumps MCP_Poll, so the answer arrives as an ordinary key
+// op and release/expiry injects escape. mcp_modal_fd/id stay set after
+// the dialog closes: the key op on the stack uses them to recognize that
+// its modal already replied and skip its own reply.
+static int	mcp_in_key;		// set around Key_Event in the key op
+static int	mcp_modal_open;		// a modal entered from an MCP key op waits
+static int	mcp_modal_fd;		// connection that got the needs_input reply
+static char	mcp_modal_id[128];	// request id that got it
+static char	mcp_modal_aid[128];	// action_id of that request (receipt key)
+static int	mcp_modal_ledger;	// pending receipt slot, -1 when none
+static int	mcp_modal_replied;	// needs_input sent for the pending modal
+static char	mcp_key_id[128];	// triggering op, saved while mcp_in_key
+static char	mcp_key_aid[128];
+static unsigned	mcp_key_hash;
+
 // the slot layer finishes a deferred act when its connection goes away
 static void MCP_FinishAct (qboolean interrupted);
 
@@ -873,17 +890,20 @@ static void MCP_SendObservation (mcap_snapshot_t *snap)
 MCP_RecordReceipt
 
 Write the next ring entry, bound to the lease and epoch live at call
-time. An empty action id has no identity and is never recorded.
+time. An empty action id has no identity and is never recorded. Returns
+the ring slot written, or -1 when nothing was recorded.
 ==================
 */
-static void MCP_RecordReceipt (char *op, char *aid, unsigned hash,
+static int MCP_RecordReceipt (char *op, char *aid, unsigned hash,
 	char *state, char *result)
 {
 	mcp_ledger_t *e;
+	int idx;
 
 	if (!aid[0])
-		return;
-	e = &mcp_ledger[mcp_ledger_next];
+		return -1;
+	idx = mcp_ledger_next;
+	e = &mcp_ledger[idx];
 	mcp_ledger_next = (mcp_ledger_next + 1) % MCP_LEDGER_SIZE;
 	strncpy (e->op, op, sizeof (e->op) - 1);
 	e->op[sizeof (e->op) - 1] = 0;
@@ -897,6 +917,29 @@ static void MCP_RecordReceipt (char *op, char *aid, unsigned hash,
 	e->state[sizeof (e->state) - 1] = 0;
 	strncpy (e->result, result, sizeof (e->result) - 1);
 	e->result[sizeof (e->result) - 1] = 0;
+	return idx;
+}
+
+/*
+==================
+MCP_SetReceiptState
+
+Update one recorded receipt's state in place — never a new entry, so a
+lease that expired while the receipt was pending does not change its
+identity. A ring that wrapped past the slot makes this a no-op.
+==================
+*/
+static void MCP_SetReceiptState (int idx, char *aid, char *state)
+{
+	mcp_ledger_t *e;
+
+	if (idx < 0 || idx >= MCP_LEDGER_SIZE)
+		return;
+	e = &mcp_ledger[idx];
+	if (!e->action_id[0] || strcmp (e->action_id, aid) != 0)
+		return;
+	strncpy (e->state, state, sizeof (e->state) - 1);
+	e->state[sizeof (e->state) - 1] = 0;
 }
 
 /*
@@ -927,6 +970,71 @@ static void MCP_ReplyMutation (char *line, char *id, char *op, unsigned hash,
 		snprintf (body, sizeof (body), "%s", result);
 	MCP_RecordReceipt (op, aid, hash, "done", body);
 	MCP_Reply (id, true, NULL, body);
+}
+
+/*
+==================
+MCP_ModalOpened
+
+SCR_ModalMessage hook. When the dialog was entered from an MCP key op,
+reply needs_input to that op with the escaped dialog text and record a
+pending receipt under its action id (no id: no receipt, like every
+mutation). Returns 1 so the caller keeps the dialog visible on demand;
+0 for a human modal.
+==================
+*/
+int MCP_ModalOpened (char *text)
+{
+	char	esctext[2048], escaid[256], body[MCP_REPLY_MAX];
+	int	savedfd;
+
+	if (!mcp_in_key)
+		return 0;
+
+	// mcp_reply_fd is still the triggering op's connection: the dialog
+	// opens synchronously inside its Key_Event, before any nested poll
+	mcp_modal_fd = mcp_reply_fd;
+	strncpy (mcp_modal_id, mcp_key_id, sizeof (mcp_modal_id) - 1);
+	mcp_modal_id[sizeof (mcp_modal_id) - 1] = 0;
+	strncpy (mcp_modal_aid, mcp_key_aid, sizeof (mcp_modal_aid) - 1);
+	mcp_modal_aid[sizeof (mcp_modal_aid) - 1] = 0;
+
+	MCP_Escape (esctext, sizeof (esctext), text);
+	MCP_Escape (escaid, sizeof (escaid), mcp_modal_aid);
+	snprintf (body, sizeof (body),
+		"\"needs_input\":true,\"modal_text\":\"%s\","
+		"\"action_id\":\"%s\"", esctext, escaid);
+	mcp_modal_ledger = MCP_RecordReceipt ("key", mcp_modal_aid,
+		mcp_key_hash, "pending", body);
+	mcp_modal_replied = 1;
+	mcp_modal_open = 1;
+
+	// the deferred reply targets the triggering connection; the caller's
+	// own reply target is restored
+	savedfd = mcp_reply_fd;
+	mcp_reply_fd = mcp_modal_fd;
+	MCP_Reply (mcp_modal_id, true, NULL, body);
+	mcp_reply_fd = savedfd;
+	return 1;
+}
+
+/*
+==================
+MCP_ModalClosed
+
+SCR_ModalMessage hook, after the wait loop: settle the pending receipt
+(confirmed -> done, anything else -> denied). mcp_modal_replied and the
+modal identity stay set: the triggering key op consumes them when its
+Key_Event finally unwinds. Idempotent for human modals.
+==================
+*/
+void MCP_ModalClosed (qboolean confirmed)
+{
+	if (!mcp_modal_open)
+		return;
+	mcp_modal_open = 0;
+	MCP_SetReceiptState (mcp_modal_ledger, mcp_modal_aid,
+		confirmed ? "done" : "denied");
 }
 
 /*
@@ -984,7 +1092,9 @@ static void MCP_FinishAct (qboolean interrupted)
 MCP_ClearControl
 
 Release the controller lease and any running action. Used by control
-release/detach and the queue-jumping release op. Idempotent.
+release/detach and the queue-jumping release op. Idempotent. A modal
+waiting on the revoked controller is answered with the escape a human
+would press, so the dialog never outlives the lease that opened it.
 ==================
 */
 static void MCP_ClearControl (void)
@@ -994,6 +1104,20 @@ static void MCP_ClearControl (void)
 	mcp_lease_id[0] = 0;
 	MCP_FinishAct (true);
 	MCP_EndInput ();
+
+	if (mcp_modal_open)
+	{
+		// this runs on the modal's own thread of control (MCP_Poll is
+		// pumped from the wait loop), so the injected escape closes the
+		// dialog when it next inspects key_lastpress. Nothing on the
+		// Key_Event path reaches the bridge, so it cannot re-enter
+		// MCP_ClearControl. key_count -1 swallows the press exactly
+		// like a human keypress caught by the loop.
+		MCP_SetReceiptState (mcp_modal_ledger, mcp_modal_aid, "denied");
+		key_count = -1;
+		Key_Event (K_ESCAPE, true);
+		Key_Event (K_ESCAPE, false);
+	}
 }
 
 /*
@@ -1502,7 +1626,7 @@ static void MCP_HandleLine (char *line)
 
 	if (!strcmp (op, "key"))
 	{
-		int	key, down;
+		int	key, down, keyfd;
 
 		hash = MCP_HashRequest (op, line);
 		if (MCP_LookupReceipt (line, id))
@@ -1518,9 +1642,30 @@ static void MCP_HandleLine (char *line)
 			MCP_Reply (id, false, "INVALID_CONTEXT", "key out of range");
 			return;
 		}
+		// the sequence is spent now: Key_Event may open a modal whose
+		// wait loop pumps the answer (and more ops) before this handler
+		// unwinds, and those must see the advanced high-water
+		mcp_lease_seq = seq;
+		// remember the triggering op so a modal opened inside Key_Event
+		// can answer it; a modal that replied makes this op skip its
+		// own reply, exactly once, matched by connection and request id
+		keyfd = mcp_reply_fd;
+		strncpy (mcp_key_id, id, sizeof (mcp_key_id) - 1);
+		mcp_key_id[sizeof (mcp_key_id) - 1] = 0;
+		if (!MCP_Field (line, "action_id", mcp_key_aid,
+			sizeof (mcp_key_aid)))
+			mcp_key_aid[0] = 0;
+		mcp_key_hash = hash;
+		mcp_in_key = 1;
 		// routes through the normal UI path (key_dest decides who sees it)
 		Key_Event (key, down ? true : false);
-		mcp_lease_seq = seq;
+		mcp_in_key = 0;
+		if (mcp_modal_replied && mcp_modal_fd == keyfd
+			&& !strcmp (mcp_modal_id, id))
+		{
+			mcp_modal_replied = 0;
+			return;
+		}
 		MCP_ReplyMutation (line, id, op, hash, "\"ok\":true");
 		return;
 	}
@@ -1950,6 +2095,16 @@ void MCP_Init (void)
 	mcp_act_active = 0;
 	mcp_world_gen = 0;
 	mcp_observe_id[0] = 0;
+	mcp_in_key = 0;
+	mcp_modal_open = 0;
+	mcp_modal_fd = -1;
+	mcp_modal_id[0] = 0;
+	mcp_modal_aid[0] = 0;
+	mcp_modal_ledger = -1;
+	mcp_modal_replied = 0;
+	mcp_key_id[0] = 0;
+	mcp_key_aid[0] = 0;
+	mcp_key_hash = 0;
 	MCAP_Shutdown ();	// normalize capture ring/statics
 }
 

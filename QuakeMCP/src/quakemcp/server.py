@@ -890,6 +890,12 @@ async def quake_ui(instance: str, key: str = "", text: str = "",
     message|menu), when given, must match the engine's current UI state.
     The envelope rides the press (the first key event); the matching
     release is part of the same delivery, not a separate action.
+
+    A key that raises a modal dialog returns `needs_input` with the
+    dialog frame and text instead of blocking until it is answered; the
+    answer is an ordinary quake_ui call (y, n, or escape), and
+    quake_status(action_id) then reports the original action done or
+    denied.
     """
     inst = _instance(instance)
     if context:
@@ -928,8 +934,24 @@ async def quake_ui(instance: str, key: str = "", text: str = "",
         else:
             raise ValueError("INVALID_CONTEXT: unknown key %r" % (key,))
     async with _cancel_releases(inst):
-        await _offload(_mutate, inst, "key", key=str(code), down="1", **env)
+        res = await _offload(_mutate, inst, "key", key=str(code), down="1",
+                             **env)
+        # the release rides the same delivery; the dialog wait loop pumps
+        # the bridge, so it is processed while the dialog is still up
         await _offload(_mutate, inst, "key", key=str(code), down="0")
+        if res.get("needs_input"):
+            # a modal the key raised: hand back its live frame and text
+            # instead of keeping the call blocked until someone answers
+            encoded, report, structured = await _offload(
+                _encode_observation, inst, instance, 0, 2000)
+            structured["needs_input"] = True
+            structured["modal_text"] = res.get("modal_text", "")
+            structured["action_id"] = res.get("action_id") or action_id
+            return CallToolResult(
+                content=[_image_content(encoded, report["encoding"]),
+                         _caption(structured)],
+                structuredContent=structured,
+                isError=False)
     return {"key": key, "code": code}
 
 

@@ -751,6 +751,10 @@ int SCR_ModalMessage (char *text)
 	scr_drawdialog = true;
 	SCR_UpdateScreen ();
 	scr_drawdialog = false;
+#ifdef QUAKE_MCP
+	if (MCP_ModalOpened (text))
+		scr_drawdialog = true;	// keep the dialog visible on demand
+#endif
 	
 	S_ClearBuffer ();		// so dma doesn't loop current sound
 
@@ -760,8 +764,19 @@ int SCR_ModalMessage (char *text)
 		Sys_SendKeyEvents ();
 #ifdef QUAKE_MCP
 		MCP_Poll ();
+		// only an MCP-entered dialog forces a render: a capture is
+		// pending and the dialog must be in the captured frame. A human
+		// dialog (scr_drawdialog already false) renders exactly as
+		// before, so forcing nothing here keeps that path byte-identical
+		if (scr_drawdialog && MCAP_Busy ())
+			SCR_UpdateScreen ();
 #endif
 	} while (key_lastpress != 'y' && key_lastpress != 'n' && key_lastpress != K_ESCAPE);
+
+#ifdef QUAKE_MCP
+	MCP_ModalClosed (key_lastpress == 'y');
+	scr_drawdialog = false;
+#endif
 
 	scr_fullupdate = 0;
 	SCR_UpdateScreen ();

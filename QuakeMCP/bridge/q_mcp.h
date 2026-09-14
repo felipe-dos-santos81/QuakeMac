@@ -28,6 +28,13 @@ void MCP_NoteTick (void);
 // world (map, restart, savegame load).
 void MCP_NoteWorldSpawn (void);
 
+// Modal dialogs (q_mcp.c): SCR_ModalMessage brackets its wait loop with
+// these. MCP_ModalOpened returns nonzero when the dialog was entered
+// from an MCP key op and replies needs_input to it; MCP_ModalClosed
+// records the answer in that op's pending receipt.
+int MCP_ModalOpened (char *text);
+void MCP_ModalClosed (qboolean confirmed);
+
 // Vision capture (q_mcp_capture.c) — render-path glReadPixels into a
 // 2-slot ring, served to the deferred observe op.
 typedef struct
