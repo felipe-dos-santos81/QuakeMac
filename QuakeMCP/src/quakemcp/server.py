@@ -4,7 +4,10 @@ Logs to stderr only — stdout carries MCP traffic. Task 4 registered the
 4 lifecycle tools; Task 5 added quake_act, Task 6 quake_state. The rest
 land in Tasks 7-8. Unregistered tools must NOT appear in tools/list.
 """
+import anyio
 import base64
+import contextlib
+import functools
 import json
 import os
 import re
@@ -129,6 +132,91 @@ def _bridge_ok(inst, op, **kw):
         raise ValueError("%s: %s" % (
             reply.get("error", "ENGINE_DISCONNECTED"),
             reply.get("detail", "")))
+    return reply.get("result", {})
+
+
+async def _offload(fn, *args, **kwargs):
+    """Run one blocking call on a worker thread.
+
+    abandon_on_cancel stays off: a cancelled wait lets the in-flight
+    bridge round trip finish before the cancellation is delivered, so a
+    deferred act/observe reply is never abandoned half-read. The
+    explicit checkpoint delivers that deferred cancellation now — without
+    it a cancelled call whose worker finished would return normally and
+    the emergency release would never fire.
+    """
+    out = await anyio.to_thread.run_sync(functools.partial(fn, *args,
+                                                           **kwargs))
+    await anyio.lowlevel.checkpoint()
+    return out
+
+
+def _emergency_release(inst):
+    """Best-effort priority release; never raises."""
+    try:
+        _bridge(inst, "release")
+    except Exception:
+        pass
+
+
+@contextlib.asynccontextmanager
+async def _cancel_releases(inst):
+    """Emergency-release the lease when the wrapped body is cancelled."""
+    try:
+        yield
+    except anyio.get_cancelled_exc_class():
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(_emergency_release, inst)
+        raise
+
+
+def _mutate(inst, op, action_id="", lease="", action_seq=0, epoch=0,
+            world_generation=0, control_revision=0, **args):
+    """Send one mutation under the controller lease envelope.
+
+    Uses the caller's lease/sequence when given, the instance's when the
+    caller gave none, and lazily acquires a lease when there is none.
+    Retries only with an action_id: the engine's receipt ring is then the
+    dedup authority.
+    """
+    lease = lease or inst.lease
+    epoch = epoch or inst.epoch
+    if not lease or not epoch:
+        res = _bridge_ok(inst, "control", sub="acquire")
+        lease = res.get("lease", "")
+        epoch = res.get("epoch", 0)
+        inst.next_seq = 0
+    inst.lease, inst.epoch = lease, epoch
+    if not getattr(inst, "_hb_thread", None):
+        inst.keepalive(lease, epoch)
+    if action_seq <= 0:
+        inst.next_seq += 1
+        action_seq = inst.next_seq
+    else:
+        inst.next_seq = max(inst.next_seq, action_seq)
+    kw = dict(args, lease=lease, epoch=str(epoch), seq=str(action_seq),
+              action_id=action_id)
+    if world_generation > 0:
+        kw["world_generation"] = str(world_generation)
+    if control_revision > 0:
+        kw["control_revision"] = str(control_revision)
+    try:
+        client = inst.client()
+        try:
+            if action_id:
+                reply = client.send_retrying(op, **kw)
+            else:
+                reply = client.send(op, **kw)
+        finally:
+            client.close()
+    except EngineDisconnected as e:
+        raise ValueError("%s: %s" % (e.code, e.detail))
+    if reply.get("ok") is not True:
+        code = reply.get("error", "ENGINE_DISCONNECTED")
+        if code == "STALE_STATE":
+            inst.stop_keepalive()
+            inst.lease = ""
+        raise ValueError("%s: %s" % (code, reply.get("detail", "")))
     return reply.get("result", {})
 
 
@@ -261,33 +349,24 @@ def _config_known(name):
     return name in CONFIG_CVARS or name.startswith(CONFIG_ACCESS_PREFIX)
 
 
-def _wait_world(inst, before, timeout=WORLD_WAIT_SECS):
+async def _wait_world(inst, before, timeout=WORLD_WAIT_SECS):
     """Wait for a loaded world that is actually accepting input."""
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = _state(inst)
+        last = await _offload(_state, inst)
         if (last["world_gen"] > before and last["signon"] == 4
                 and last["movemessages"] > 2):
             return last
-        time.sleep(0.25)
+        await anyio.sleep(0.25)
     raise ValueError("ACTION_TIMEOUT: world did not become ready: %r" % (last,))
 
 
 @mcp.tool(annotations=RO_TRUE)
-def quake_status(instance: str = "") -> dict:
+async def quake_status(instance: str = "") -> dict:
     """Report connection, instance and controller state."""
     inst = _instance(instance)
-    reply = None
-    try:
-        client = inst.client()
-        try:
-            reply = client.send("ping")
-        finally:
-            client.close()
-    except EngineDisconnected as e:
-        raise ValueError("%s: %s" % (e.code, e.detail))
-    assert reply is not None
+    reply = await _offload(_bridge, inst, "ping")
     ready = reply.get("ok") is True and reply.get("result", {}).get(
         "ready") is True
     return {"instance": instance, "pid": inst.pid, "owned": inst.owned,
@@ -295,7 +374,7 @@ def quake_status(instance: str = "") -> dict:
 
 
 @mcp.tool(annotations=RO_TRUE)
-def quake_state(instance: str) -> StateOut:
+async def quake_state(instance: str) -> StateOut:
     """Return one read-only engine state snapshot.
 
     Keys: epoch, world_gen, control_rev, frame, time, map, pos, angles,
@@ -303,19 +382,7 @@ def quake_state(instance: str) -> StateOut:
     A state snapshot and the pixels of the same frame share `frame`.
     """
     inst = _instance(instance)
-    try:
-        client = inst.client()
-        try:
-            reply = client.send("state")
-        finally:
-            client.close()
-    except EngineDisconnected as e:
-        raise ValueError("%s: %s" % (e.code, e.detail))
-    if reply.get("ok") is not True:
-        raise ValueError("%s: %s" % (
-            reply.get("error", "ENGINE_DISCONNECTED"),
-            reply.get("detail", "")))
-    state = dict(reply.get("result", {}))
+    state = dict(await _offload(_bridge_ok, inst, "state"))
     state["instance"] = instance
     obs = Observation(
         identity={"instance": instance, "epoch": state.get("epoch"),
@@ -325,7 +392,7 @@ def quake_state(instance: str) -> StateOut:
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_start(profile: str = "local", port: int = 28900) -> dict:
+async def quake_start(profile: str = "local", port: int = 28900) -> dict:
     """Launch a preconfigured executable; wait for authenticated ready."""
     if not isinstance(profile, str) or profile not in lifecycle.PROFILES:
         raise ValueError("INVALID_CONTEXT: unknown profile %r" % (profile,))
@@ -333,7 +400,7 @@ def quake_start(profile: str = "local", port: int = 28900) -> dict:
         raise ValueError("INVALID_CONTEXT: bad port %r" % (port,))
     inst = None
     try:
-        inst = lifecycle.launch(profile, port=port)
+        inst = await _offload(lifecycle.launch, profile, port=port)
     except EngineDisconnected as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     except QuakeMCPError as e:
@@ -344,7 +411,7 @@ def quake_start(profile: str = "local", port: int = 28900) -> dict:
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_attach(instance: str, port: int, token: str) -> dict:
+async def quake_attach(instance: str, port: int, token: str) -> dict:
     """Attach to an explicitly authorized instrumented instance."""
     if not instance or not token:
         raise ValueError("INVALID_CONTEXT: instance and token required")
@@ -352,7 +419,7 @@ def quake_attach(instance: str, port: int, token: str) -> dict:
         raise ValueError("INVALID_CONTEXT: bad port %r" % (port,))
     inst = None
     try:
-        inst = lifecycle.attach(instance, port, token)
+        inst = await _offload(lifecycle.attach, instance, port, token)
     except EngineDisconnected as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     except QuakeMCPError as e:
@@ -430,7 +497,7 @@ def _caption(structured):
 
 
 @mcp.tool(annotations=RO_TRUE)
-def quake_observe(
+async def quake_observe(
     instance: str,
     after_frame: int = 0,
     timeout_ms: int = 1000,
@@ -463,9 +530,10 @@ def quake_observe(
     if after_frame < 0:
         raise ValueError("INVALID_CONTEXT: after_frame must be >= 0")
 
-    encoded, report, structured = _encode_observation(
-        inst, instance, after_frame=after_frame, timeout_ms=timeout_ms,
-        longest_edge=longest_edge, image_format=image_format, crop=crop,
+    encoded, report, structured = await _offload(
+        _encode_observation, inst, instance, after_frame=after_frame,
+        timeout_ms=timeout_ms, longest_edge=longest_edge,
+        image_format=image_format, crop=crop,
         allow_hud_crop=allow_hud_crop)
     structured = vision.apply_telemetry(structured, telemetry)
     return CallToolResult(
@@ -476,7 +544,7 @@ def quake_observe(
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_act(
+async def quake_act(
     instance: str,
     forward: float = 0.0,
     strafe: float = 0.0,
@@ -541,27 +609,9 @@ def quake_act(
     if duration_ms and not 1 <= duration_ms <= 1000:
         raise ValueError("INVALID_CONTEXT: duration_ms out of range 1..1000")
 
-    client = inst.client()
-    try:
-        # actions may run on a caller-held lease or lazily acquire one;
-        # either way the server beats it while it is in use
-        if not lease or not epoch:
-            reply = client.send("control", sub="acquire")
-            if reply.get("ok") is not True:
-                raise ValueError("%s: %s" % (
-                    reply.get("error", "ENGINE_DISCONNECTED"),
-                    reply.get("detail", "")))
-            res = reply.get("result", {})
-            lease = res.get("lease", "")
-            epoch = res.get("epoch", 0)
-            inst.keepalive(lease, epoch)
-            if action_seq <= 0:
-                action_seq = 1  # first action on the fresh lease
-        kw = {
-            "lease": lease,
-            "epoch": str(epoch),
-            "seq": str(action_seq),
-            "action_id": action_id,
+    async with _cancel_releases(inst):
+        # arguments must reach the bridge as strings, like the envelope
+        args = {
             "forward": str(forward),
             "strafe": str(strafe),
             "vertical": str(vertical),
@@ -573,41 +623,24 @@ def quake_act(
             "impulse": str(weapon_id),
         }
         if ticks:
-            kw["ticks"] = str(ticks)
+            args["ticks"] = str(ticks)
         else:
-            kw["duration_ms"] = str(duration_ms)
-        if world_generation > 0:
-            kw["world_generation"] = str(world_generation)
-        if control_revision > 0:
-            kw["control_revision"] = str(control_revision)
-        if action_id:
-            # the engine's receipt ring makes the retry safe: same
-            # arguments under the same id never execute twice
-            reply = client.send_retrying("act", **kw)
-        else:
-            reply = client.send("act", **kw)
-    except EngineDisconnected as e:
-        raise ValueError("%s: %s" % (e.code, e.detail))
-    finally:
-        client.close()
-
-    if reply.get("ok") is not True:
-        code = reply.get("error", "ENGINE_DISCONNECTED")
-        if code == "STALE_STATE":
-            # the lease is gone; stop beating a dead id
-            inst.stop_keepalive()
-        raise ValueError("%s: %s" % (code, reply.get("detail", "")))
-    res = reply.get("result", {})
-    completed = {
-        "action_id": res.get("action_id", action_id),
-        "completed_ticks": res.get("completed_ticks"),
-        "elapsed_ms": res.get("elapsed_ms"),
-        "interrupted": res.get("interrupted"),
-    }
-    # the action observation must follow the final completed step and its
-    # render; a capture failure is surfaced, never fabricated
-    encoded, report, structured = _encode_observation(
-        inst, instance, after_frame=0, timeout_ms=2000)
+            args["duration_ms"] = str(duration_ms)
+        res = await _offload(_mutate, inst, "act", action_id=action_id,
+                             lease=lease, action_seq=action_seq,
+                             epoch=epoch,
+                             world_generation=world_generation,
+                             control_revision=control_revision, **args)
+        completed = {
+            "action_id": res.get("action_id", action_id),
+            "completed_ticks": res.get("completed_ticks"),
+            "elapsed_ms": res.get("elapsed_ms"),
+            "interrupted": res.get("interrupted"),
+        }
+        # the action observation must follow the final completed step and
+        # its render; a capture failure is surfaced, never fabricated
+        encoded, report, structured = await _offload(
+            _encode_observation, inst, instance, 0, 2000)
     structured.update(completed)
     structured = vision.apply_telemetry(structured, telemetry)
     return CallToolResult(
@@ -618,8 +651,8 @@ def quake_act(
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_game(instance: str, operation: str, map_id: str = "",
-               slot: str = "", overwrite: bool = False) -> dict:
+async def quake_game(instance: str, operation: str, map_id: str = "",
+                     slot: str = "", overwrite: bool = False) -> dict:
     """Run a typed game-lifecycle operation.
 
     new_game -> map start, restart -> restart, load_map {map_id},
@@ -631,53 +664,58 @@ def quake_game(instance: str, operation: str, map_id: str = "",
     """
     inst = _instance(instance)
     if operation == "list_maps":
-        return {"operation": operation, "maps": _list_maps(inst)}
+        return {"operation": operation,
+                "maps": await _offload(_list_maps, inst)}
     if operation == "list_saves":
-        return {"operation": operation, "saves": _list_saves(inst)}
+        return {"operation": operation,
+                "saves": await _offload(_list_saves, inst)}
     if operation == "respawn":
         raise ValueError("UNSUPPORTED_CAPABILITY: respawn semantics "
                          "unverified")
     if operation == "new_game":
-        return _world_op(inst, operation, "map start")
+        return await _world_op(inst, operation, "map start")
     if operation == "restart":
-        return _world_op(inst, operation, "restart")
+        return await _world_op(inst, operation, "restart")
     if operation == "load_map":
         mid = _map_id(map_id)
-        if mid not in _list_maps(inst):
+        if mid not in await _offload(_list_maps, inst):
             raise ValueError("INVALID_CONTEXT: unknown map %r" % (mid,))
-        return _world_op(inst, operation, "map %s" % mid)
+        return await _world_op(inst, operation, "map %s" % mid)
     if operation == "save":
         name = _save_slot(slot)
         path = _save_path(inst, name)
         if os.path.exists(path) and not overwrite:
             raise ValueError("INVALID_CONTEXT: %s exists; pass overwrite=true"
                              % name)
-        return _save_op(inst, name, path)
+        return await _save_op(inst, name, path)
     if operation == "load":
         name = _save_slot(slot)
         if not os.path.exists(_save_path(inst, name)):
             raise ValueError("INVALID_CONTEXT: no save named %r" % (name,))
-        return _world_op(inst, operation, "load %s" % name)
+        return await _world_op(inst, operation, "load %s" % name)
     raise ValueError("UNSUPPORTED_CAPABILITY: operation %r" % (operation,))
 
 
-def _world_op(inst, operation, command):
+async def _world_op(inst, operation, command):
     """Run a world-mutating op with the simulation clock running.
 
     A stepped session holds the clock while idle, so a map/restart/load
     would never finish sign-on and the op would time out. The session's
     mode is restored afterwards when it was stepped before.
     """
-    stepped = _state(inst).get("mode") == "stepped"
-    if stepped:
-        _bridge_ok(inst, "control", sub="mode", mode="realtime")
-    try:
-        before = _state(inst)["world_gen"]
-        _bridge_ok(inst, "exec", text=command)
-        st = _wait_world(inst, before)
-    finally:
+    async with _cancel_releases(inst):
+        stepped = (await _offload(_state, inst)).get("mode") == "stepped"
         if stepped:
-            _bridge_ok(inst, "control", sub="mode", mode="stepped")
+            await _offload(_bridge_ok, inst, "control", sub="mode",
+                           mode="realtime")
+        try:
+            before = (await _offload(_state, inst))["world_gen"]
+            await _offload(_bridge_ok, inst, "exec", text=command)
+            st = await _wait_world(inst, before)
+        finally:
+            if stepped:
+                await _offload(_bridge_ok, inst, "control", sub="mode",
+                               mode="stepped")
     return {"operation": operation, "world_gen": st["world_gen"],
             "frame": st["frame"], "map": st["map"], "gameplay_ready": True}
 
@@ -692,26 +730,27 @@ SAVE_FAILURES = (
 )
 
 
-def _save_op(inst, slot, path):
-    _bridge_ok(inst, "exec", text="save %s" % slot)
-    deadline = time.time() + SAVE_WAIT_SECS
-    tail = ""
-    while time.time() < deadline:
-        tail = _tail(inst)
-        if "done." in tail:
-            return {"operation": "save", "slot": slot, "saved": True,
-                    "file": path}
-        for bad in SAVE_FAILURES:
-            if bad in tail:
-                raise ValueError("NOT_READY: %s" % (bad,))
-        time.sleep(0.25)
-    raise ValueError("ACTION_TIMEOUT: save %s did not complete: %r"
-                     % (slot, tail[-200:]))
+async def _save_op(inst, slot, path):
+    async with _cancel_releases(inst):
+        await _offload(_bridge_ok, inst, "exec", text="save %s" % slot)
+        deadline = time.time() + SAVE_WAIT_SECS
+        tail = ""
+        while time.time() < deadline:
+            tail = await _offload(_tail, inst)
+            if "done." in tail:
+                return {"operation": "save", "slot": slot, "saved": True,
+                        "file": path}
+            for bad in SAVE_FAILURES:
+                if bad in tail:
+                    raise ValueError("NOT_READY: %s" % (bad,))
+            await anyio.sleep(0.25)
+        raise ValueError("ACTION_TIMEOUT: save %s did not complete: %r"
+                         % (slot, tail[-200:]))
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_config(instance: str, operation: str, name: str,
-                 value: str = "") -> dict:
+async def quake_config(instance: str, operation: str, name: str,
+                       value: str = "") -> dict:
     """Read or write one allowlisted engine setting (effective value).
 
     Only declared input/view/audio/access settings are reachable; unknown
@@ -725,7 +764,7 @@ def quake_config(instance: str, operation: str, name: str,
     if operation == "get":
         if not _config_known(name):
             raise ValueError("INVALID_CONTEXT: unknown setting %r" % (name,))
-        res = _bridge_ok(inst, "cvar", name=name)
+        res = await _offload(_bridge_ok, inst, "cvar", name=name)
         return {"operation": operation, "name": name,
                 "value": res.get("value")}
     writable = (name in CONFIG_CVARS
@@ -736,13 +775,14 @@ def quake_config(instance: str, operation: str, name: str,
         raise ValueError("INVALID_CONTEXT: unknown setting %r" % (name,))
     if len(value) > 128 or any(ord(ch) < 32 for ch in value):
         raise ValueError("INVALID_CONTEXT: bad setting value")
-    res = _bridge_ok(inst, "cvar", name=name, value=value)
+    async with _cancel_releases(inst):
+        res = await _offload(_bridge_ok, inst, "cvar", name=name, value=value)
     return {"operation": operation, "name": name, "value": res.get("value")}
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_console(instance: str, command: str,
-                  args: list[str] = []) -> dict:
+async def quake_console(instance: str, command: str,
+                        args: list[str] = []) -> dict:
     """Run one allowlisted console command with validated arguments.
 
     Never accepts a raw command line; anything outside the allowlist is
@@ -751,14 +791,15 @@ def quake_console(instance: str, command: str,
     """
     inst = _instance(instance)
     line = _console_line(command, args)
-    res = _bridge_ok(inst, "exec", text=line)
+    async with _cancel_releases(inst):
+        res = await _offload(_bridge_ok, inst, "exec", text=line)
     return {"command": command, "args": list(args),
             "output": res.get("output", "")}
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_ui(instance: str, key: str = "", text: str = "",
-            context: str = "") -> dict:
+async def quake_ui(instance: str, key: str = "", text: str = "",
+                   context: str = "") -> dict:
     """Deliver UI keys or type into the active text field.
 
     key is a name (escape/enter/up/down/...) or a single character; the
@@ -772,19 +813,22 @@ def quake_ui(instance: str, key: str = "", text: str = "",
         if want is None:
             raise ValueError("INVALID_CONTEXT: context must be game|console|"
                              "message|menu")
-        if _state(inst)["ui"] != want:
+        if (await _offload(_state, inst))["ui"] != want:
             raise ValueError("NOT_READY: expected %s UI context" % context)
     if text:
-        if _state(inst)["ui"] not in (1, 2):
+        if (await _offload(_state, inst))["ui"] not in (1, 2):
             raise ValueError("INVALID_CONTEXT: no active text field")
         sent = []
-        for ch in text:
-            if not 32 <= ord(ch) <= 126:
-                raise ValueError("INVALID_CONTEXT: text must be printable "
-                                 "ASCII")
-            _bridge_ok(inst, "key", key=str(ord(ch)), down="1")
-            _bridge_ok(inst, "key", key=str(ord(ch)), down="0")
-            sent.append(ch)
+        async with _cancel_releases(inst):
+            for ch in text:
+                if not 32 <= ord(ch) <= 126:
+                    raise ValueError("INVALID_CONTEXT: text must be printable "
+                                     "ASCII")
+                await _offload(_bridge_ok, inst, "key", key=str(ord(ch)),
+                               down="1")
+                await _offload(_bridge_ok, inst, "key", key=str(ord(ch)),
+                               down="0")
+                sent.append(ch)
         return {"typed": len(sent)}
     if not key:
         raise ValueError("INVALID_CONTEXT: key or text required")
@@ -794,14 +838,15 @@ def quake_ui(instance: str, key: str = "", text: str = "",
             code = ord(key)
         else:
             raise ValueError("INVALID_CONTEXT: unknown key %r" % (key,))
-    _bridge_ok(inst, "key", key=str(code), down="1")
-    _bridge_ok(inst, "key", key=str(code), down="0")
+    async with _cancel_releases(inst):
+        await _offload(_bridge_ok, inst, "key", key=str(code), down="1")
+        await _offload(_bridge_ok, inst, "key", key=str(code), down="0")
     return {"key": key, "code": code}
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_control(instance: str, operation: str = "acquire",
-                  mode: str = "") -> dict:
+async def quake_control(instance: str, operation: str = "acquire",
+                        mode: str = "") -> dict:
     """Acquire/release/detach the controller lease or set the execution mode.
 
     acquire refuses while physical attack/jump buttons are held
@@ -811,14 +856,20 @@ def quake_control(instance: str, operation: str = "acquire",
     """
     inst = _instance(instance)
     if operation in ("acquire", "release", "detach"):
-        res = _bridge_ok(inst, "control", sub=operation)
+        res = await _offload(_bridge_ok, inst, "control", sub=operation)
         if operation == "acquire":
             # the server owns the lease while the caller holds it: beat
             # every 500 ms so tool calls longer than the 2 s expiry
             # (image encoding, world loads) do not lose control
-            inst.keepalive(res.get("lease", ""), res.get("epoch", 0))
+            inst.lease = res.get("lease", "")
+            inst.epoch = res.get("epoch", 0)
+            inst.next_seq = 0
+            inst.keepalive(inst.lease, inst.epoch)
         else:
             inst.stop_keepalive()
+            inst.lease = ""
+            inst.epoch = 0
+            inst.next_seq = 0
         out = {"operation": operation}
         for k in ("lease", "epoch", "control_rev", "released"):
             if k in res:
@@ -827,23 +878,29 @@ def quake_control(instance: str, operation: str = "acquire",
     if operation == "mode":
         if mode not in ("stepped", "realtime"):
             raise ValueError("INVALID_CONTEXT: mode must be stepped|realtime")
-        res = _bridge_ok(inst, "control", sub="mode", mode=mode)
+        async with _cancel_releases(inst):
+            res = await _offload(_bridge_ok, inst, "control", sub="mode",
+                                 mode=mode)
         return {"operation": "mode", "mode": res.get("mode", mode)}
     raise ValueError("INVALID_CONTEXT: operation must be acquire|release|"
                      "detach|mode")
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_release(instance: str, reason: str = "") -> dict:
+async def quake_release(instance: str, reason: str = "") -> dict:
     """Priority emergency stop: cancel actions, revoke control, neutralize
     MCP input. Idempotent and safe with no lease held."""
     inst = _instance(instance)
-    res = _bridge_ok(inst, "release")
+    res = await _offload(_bridge_ok, inst, "release")
+    inst.stop_keepalive()
+    inst.lease = ""
+    inst.epoch = 0
+    inst.next_seq = 0
     return {"released": res.get("released", True), "reason": reason}
 
 
 @mcp.tool(annotations=RO_FALSE_STOP)
-def quake_stop(instance: str) -> dict:
+async def quake_stop(instance: str) -> dict:
     """Stop an owned child. Refuses attached user-owned processes."""
     inst = lifecycle.get(instance)
     if inst is None:
@@ -851,7 +908,7 @@ def quake_stop(instance: str) -> dict:
                          % (instance,))
     result = None
     try:
-        result = inst.stop()
+        result = await _offload(inst.stop)
     except QuakeMCPError as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     assert result is not None
