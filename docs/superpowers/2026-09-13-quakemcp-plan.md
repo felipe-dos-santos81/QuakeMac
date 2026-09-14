@@ -331,7 +331,7 @@ git commit -m "feat: quakemcp bounded actions with watchdog"
 
 - [ ] **Step 1: Implement `state` in `q_mcp.c`**
 
-Read-only. `world_gen`/`control_rev`/`epoch` counters static in `q_mcp.c` (epoch set at `MCP_Init` from `getpid()`; `world_gen` bumped by hooking? No new hooks: bump when `sv.name` string changes between polls — detect in `MCP_Poll`, cheap `strcmp`). Dead flag: `cl.stats[STAT_HEALTH] <= 0`. Intermission: `cl.intermission`. UI: `key_dest` int. All values from one poll pass (single snapshot, no re-reads).
+Read-only. `world_gen`/`control_rev`/`epoch` counters static in `q_mcp.c` (epoch set at `MCP_Init` from `getpid()`; `world_gen` bumped by hooking? No new hooks: bump when `sv.name` string changes between polls — detect in `MCP_Poll`, cheap `strcmp`). SHIPPED DRIFT (2026-09-14): the round added MCP_NoteWorldSpawn in SV_SpawnServer instead, because a sv.name poll cannot see same-map same-time reloads; recorded in the Fixes Ledger. Dead flag: `cl.stats[STAT_HEALTH] <= 0`. Intermission: `cl.intermission`. UI: `key_dest` int. All values from one poll pass (single snapshot, no re-reads).
 
 - [ ] **Step 2: Register `quake_state` + freeze `Observation`**
 

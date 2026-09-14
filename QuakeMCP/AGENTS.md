@@ -39,15 +39,20 @@ Quake/build-macosx/glquake -basedir game +mcp_enabled 1         # manual smoke
 - **Hook line numbers** in `docs/engine-integration.md` are re-verified per
   engine change (method and date in that file); re-run the greps after
   moving engine code.
+- **Takeover eats a left click:** while a lease is held, the first physical
+  left-click (and its release) is swallowed by the stop control and revokes
+  the lease — it never reaches the game or the access module. The session
+  keeps its mode, so a stepped session stays frozen until it is resumed.
 
 ## Architecture
 
 Up to two loopback TCP connections (the call channel plus one control
 channel), line-JSON control ops plus a framed binary blob for frames. The C
 side (`bridge/q_mcp.c` dispatch, `q_mcp_input.c` input merge,
-`q_mcp_capture.c` readback) runs **on the main thread only** — `MCP_Poll`
-pumps from `_Host_Frame` and the modal-dialog loop. The Python side
-(`src/quakemcp/`) owns process supervision, policy, and MCP shape.
+`q_mcp_capture.c` readback, `q_mcp_ui.c` takeover banner/click) runs **on the
+main thread only** — `MCP_Poll` pumps from `_Host_Frame` and the modal-dialog
+loop. The Python side (`src/quakemcp/`) owns process supervision, policy, and
+MCP shape.
 
 Engine hook sites (`#ifdef QUAKE_MCP` or no-op macro shim):
 
@@ -58,6 +63,8 @@ Engine hook sites (`#ifdef QUAKE_MCP` or no-op macro shim):
 | `MCP_Move`/`MCP_Buttons`/`MCP_Impulse` | `Quake/client/cl_main.c`, `cl_input.c` | Input merge in `CL_SendCmd` |
 | `MCP_NoteWorldSpawn` | `Quake/server/sv_main.c` | Exact `world_gen` bump on every new world |
 | `MCAP_Frame` | `Quake/render/gl_screen.c` | Framebuffer capture at end of `SCR_UpdateScreen` |
+| `MCP_UiDraw` | `Quake/render/gl_screen.c` | Takeover banner, drawn while a lease is held |
+| `MCP_UiMouseClick` | `Quake/platform/in_sdl.c` | Left-click takeover before the access funnel |
 
 ## Protocol
 
@@ -77,9 +84,9 @@ Engine hook sites (`#ifdef QUAKE_MCP` or no-op macro shim):
 - **Two slots:** deferred `act`/`observe` replies return on the requesting
   connection; a third connection is closed. EOF on the deferred owner
   finishes the act (or cancels the observe).
-- **Reads:** `tail` returns the console ring (the old `exec text=""` idiom
-  stays a read); `status {action_id}` reads the receipt ledger, so
-  completion stays answerable after the retry frame is gone.
+- **Reads:** `tail` is the console read; `exec` always requires text (missing
+  or empty replies `INVALID_CONTEXT`); `status {action_id}` reads the receipt
+  ledger, so completion stays answerable after the retry frame is gone.
 - **Modal:** a key that raises a menu confirmation replies `needs_input`
   with the dialog frame; release or lease loss injects the escape a human
   would press and denies the receipt.

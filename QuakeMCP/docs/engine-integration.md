@@ -4,8 +4,24 @@ Fork commit: `0c8a6fc`. Scope: glquake (`Quake/` tree) only.
 Renderer: OpenGL (`Quake/platform/gl_vidsdl.c`).
 Platform pump: SDL (`Quake/platform/in_sdl.c`).
 
-All line numbers re-verified with `rg -n` against the tree at this commit on
-2026-09-14. If the tree moves, re-run the greps for each symbol below.
+All line numbers re-verified with `rg -n` against the tree at `e0e0eb0` on
+2026-09-14. If the tree moves, re-run the greps for each symbol in the hook
+inventory.
+
+## Hook inventory
+
+| Hook | File | Role |
+|---|---|---|
+| `MCP_Poll` | `Quake/host.c:664`, `Quake/render/gl_screen.c:766` | socket pump, modal wait loop included |
+| `MCP_FreezeSim` | `Quake/host.c:694,706,723,732` | stepped-mode gate |
+| `MCP_NoteTick` | `Quake/host.c:711,728` | completed-step counter |
+| `MCP_Move` | `Quake/client/cl_main.c:693` | input merge in `CL_SendCmd` |
+| `MCP_Buttons` | `Quake/client/cl_input.c:377` | button bits in `CL_SendMove` |
+| `MCP_Impulse` | `Quake/client/cl_input.c:384` | one-shot impulse byte in `CL_SendMove` |
+| `MCP_NoteWorldSpawn` | `Quake/server/sv_main.c:1068` | exact `world_gen` bump on every new world |
+| `MCP_UiDraw` | `Quake/render/gl_screen.c:948` | takeover banner, drawn before `MCAP_Frame` while a lease is held |
+| `MCP_UiMouseClick` | `Quake/platform/in_sdl.c:185` | left-click takeover before the access funnel |
+| `MCAP_Frame` | `Quake/render/gl_screen.c:949` | framebuffer capture at end of `SCR_UpdateScreen` |
 
 ## Hook sites
 
@@ -29,9 +45,9 @@ Movement source details (`Quake/client/cl_input.c`):
 |---|---|---|
 | `CL_BaseMove` | `cl_input.c:287` | keyboard movement baseline |
 | `CL_SendMove` | `cl_input.c:336` | builds + sends `usercmd_t` |
-| attack/jump bits + impulse | `cl_input.c:368-387` | only attack (bit 0) and jump (bit 1) serialized; `in_impulse` written then cleared; MCP bits/impulse merged at :377-382 |
-| `+use` registered | `cl_input.c:449` | button exists as a command but is NOT in the movement packet — not a baseline capability |
-| startup drop | `cl_input.c:403-406` | first two movement messages dumped (`++cl.movemessages <= 2`); `gameplay_ready` requires `movemessages > 2` (counter declared `client.h:150`) |
+| attack/jump bits + impulse | `cl_input.c:368-388` | only attack (bit 0) and jump (bit 1) serialized; the engine writes and clears `in_impulse`; MCP never assigns it — the pending MCP impulse merges at :377-384 only when no human impulse is pending that frame |
+| `+use` registered | `cl_input.c:450` | button exists as a command but is NOT in the movement packet — not a baseline capability |
+| startup drop | `cl_input.c:407-408` | first two movement messages dumped (`++cl.movemessages <= 2`); `gameplay_ready` requires `movemessages > 2` (counter declared `client.h:150`) |
 
 ### 2. Frame pump — `_Host_Frame`
 
@@ -165,7 +181,7 @@ bounds pass, returning `{respawned, waited_ms}`.
 
 | Capability | Surface | Measured behavior |
 |---|---|---|
-| Bounded action | `quake_act` -> bridge `act` | Axes forward/strafe/vertical [-1,1] scaled through `cl_forwardspeed`/`cl_sidespeed`/`cl_upspeed`; `run` multiplies by `cl_movespeedkey`. Yaw/pitch deltas applied once, pitch clamped +80/-70. Jump `none`/`tap`/`hold`. Attack and weapon impulse 1..8 carried in the usercmd bits/impulse only; `in_attack`/`in_jump`/`in_impulse` are never written. Wall cap 5 s; tick budget 1..72 counted from completed simulation steps. |
+| Bounded action | `quake_act` -> bridge `act` | Axes forward/strafe/vertical [-1,1] scaled through `cl_forwardspeed`/`cl_sidespeed`/`cl_upspeed`; `run` multiplies by `cl_movespeedkey`. Yaw/pitch deltas applied once, pitch clamped +80/-70. Jump `none`/`tap`/`hold`. Attack and weapon impulse 1..8 carried in the usercmd bits/impulse only; `in_attack`/`in_jump`/`in_impulse` are never written; a pending human impulse wins its frame, a pending MCP impulse is deferred to the next serialization. Wall cap 5 s; tick budget 1..72 counted from completed simulation steps. |
 | Timing modes | `quake_control mode=stepped\|realtime` | Owned sessions start stepped (`quake_start` sets the mode; a held button falls back to realtime and says why); `quake_attach` changes nothing. Stepped freezes `CL_SendCmd`/`Host_ServerFrame`/`host_time` while idle and advances exactly N steps per ticks act; `duration_ms` is refused in stepped mode (`UNSUPPORTED_CAPABILITY`). World-mutating ops temporarily resume realtime and restore stepped. |
 | Axes/turn signs | bridge merge | Forward/right/up positive; positive yaw turns right (`viewangles[YAW] -= delta`); positive pitch looks up (`viewangles[PITCH] -= delta`, engine pitch is positive-down). |
 | Weapon switching | `quake_act weapon_id` | `impulse 1..8`; observed `impulse 1` switching to the axe (current-ammo stat 25 -> 0). |
