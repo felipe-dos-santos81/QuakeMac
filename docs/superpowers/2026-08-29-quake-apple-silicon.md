@@ -1352,7 +1352,7 @@ QuakeMCP/tests/integration (42 passed).
 
 ### QuakeMCP conformance round (fix)
 Commits: b9d4e93, 7259023, 0cdca1f, 5f3ee67, c5e9f65, 9ad7055, 83d0a5a,
-3f99e16, c28031f, 56c1b9b, 5635ad3, 48120a4. Spec:
+3f99e16, c28031f, 56c1b9b, 5635ad3, 48120a4, 201e8e5. Spec:
 docs/superpowers/2026-09-14-quakemcp-conformance-design.md. Plan:
 docs/superpowers/2026-09-14-quakemcp-conformance-plan.md.
 One shared mutation envelope on the wire (lease/epoch/seq plus optional
