@@ -20,13 +20,21 @@ class BridgeClient:
         self.host = host
         self.port = port
         self.token = token
+        self._open()
+
+    def _open(self):
         try:
             self._sock = socket.create_connection(
-                (host, port), timeout=SEND_TIMEOUT)
+                (self.host, self.port), timeout=SEND_TIMEOUT)
         except OSError as e:
-            raise EngineDisconnected("connect %s:%s: %s" % (host, port, e))
+            raise EngineDisconnected("connect %s:%s: %s" % (self.host,
+                                                            self.port, e))
         self._sock.settimeout(RECV_TIMEOUT)
         self._file = self._sock.makefile("rwb")
+
+    def _reconnect(self):
+        self.close()
+        self._open()
 
     def close(self):
         try:
@@ -55,6 +63,25 @@ class BridgeClient:
             return json.loads(line.decode())
         except ValueError as e:
             raise EngineDisconnected("send %s: bad reply: %s" % (op, e))
+
+    def send_retrying(self, op, attempts=2, **kw):
+        """Send, reconnecting once per retry on a connection failure.
+
+        Only safe for operations the bridge deduplicates by
+        (lease, action_id): the retry carries the same arguments, so a
+        request that already executed returns its recorded receipt
+        instead of running a second time.
+        """
+        last = None
+        for i in range(attempts):
+            try:
+                return self.send(op, **kw)
+            except EngineDisconnected as e:
+                last = e
+                if i + 1 >= attempts:
+                    break
+                self._reconnect()
+        raise last
 
     def read_blob(self, n):
         """Read exactly N raw bytes (framed image payload, Task 7)."""

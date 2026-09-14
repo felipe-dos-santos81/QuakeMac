@@ -512,10 +512,13 @@ def quake_act(
     removes gameplay telemetry and derived flags.
 
     Second layer of the lease protocol: the bridge serializes mutations
-    through the controller lease (acquired via quake_control in Task 8, or
-    lazily here with action_seq defaulting to 1). world_generation and
-    control_revision are accepted for schema stability but enforced in
-    Task 9.
+    through the controller lease (acquired via quake_control, or lazily
+    here with action_seq defaulting to 1). world_generation and
+    control_revision, when non-zero, are checked against the engine and
+    a mismatch is STALE_STATE. With an action_id the engine records a
+    receipt, so a dropped connection is retried once and either returns
+    that receipt or runs the action exactly once; reusing an action_id
+    with different arguments is POLICY_DENIED.
     """
     inst = lifecycle.get(instance)
     if inst is None:
@@ -572,7 +575,16 @@ def quake_act(
             kw["ticks"] = str(ticks)
         else:
             kw["duration_ms"] = str(duration_ms)
-        reply = client.send("act", **kw)
+        if world_generation > 0:
+            kw["world_generation"] = str(world_generation)
+        if control_revision > 0:
+            kw["control_revision"] = str(control_revision)
+        if action_id:
+            # the engine's receipt ring makes the retry safe: same
+            # arguments under the same id never execute twice
+            reply = client.send_retrying("act", **kw)
+        else:
+            reply = client.send("act", **kw)
     except EngineDisconnected as e:
         raise ValueError("%s: %s" % (e.code, e.detail))
     finally:
@@ -772,12 +784,14 @@ def quake_ui(instance: str, key: str = "", text: str = "",
 
 
 @mcp.tool(annotations=RO_FALSE)
-def quake_control(instance: str, operation: str = "acquire") -> dict:
-    """Acquire/release/detach the controller lease.
+def quake_control(instance: str, operation: str = "acquire",
+                  mode: str = "") -> dict:
+    """Acquire/release/detach the controller lease or set the execution mode.
 
     acquire refuses while physical attack/jump buttons are held
-    (CONTROL_BUSY). release and detach are idempotent. Execution modes
-    arrive with stepped mode in Task 9.
+    (CONTROL_BUSY). release and detach are idempotent. mode selects
+    stepped (freeze the simulation between actions, advance only by
+    ticks) or realtime; stepped sessions need ticks, not duration_ms.
     """
     inst = _instance(instance)
     if operation in ("acquire", "release", "detach"):
@@ -788,8 +802,10 @@ def quake_control(instance: str, operation: str = "acquire") -> dict:
                 out[k] = res[k]
         return out
     if operation == "mode":
-        raise ValueError("UNSUPPORTED_CAPABILITY: execution modes land in "
-                         "Task 9")
+        if mode not in ("stepped", "realtime"):
+            raise ValueError("INVALID_CONTEXT: mode must be stepped|realtime")
+        res = _bridge_ok(inst, "control", sub="mode", mode=mode)
+        return {"operation": "mode", "mode": res.get("mode", mode)}
     raise ValueError("INVALID_CONTEXT: operation must be acquire|release|"
                      "detach|mode")
 

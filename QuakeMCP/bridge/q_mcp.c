@@ -78,6 +78,39 @@ static double	mcp_act_start;		// wall clock at act start
 static double	mcp_act_duration;	// seconds requested (MCP_ACT_DURATION)
 static char	mcp_act_id[128];
 static char	mcp_act_aid[128];	// action_id echo
+static char	mcp_act_lease[64];	// lease the action was admitted on
+static unsigned	mcp_act_hash;		// argument hash for the receipt ring
+static int	mcp_act_epoch;
+
+// Stepped mode (Task 9): when set, _Host_Frame skips the client and
+// server simulation steps while no action runs, so an idle owned session
+// consumes no game time. Polling, rendering and the watchdog keep
+// running. Realtime until the controller opts in with control mode.
+static int	mcp_step_mode;
+
+// Simulation frame counter: incremented once per completed simulation
+// step, so a frozen session reports a constant frame and an act of N
+// ticks moves it by exactly N. This is the id used for observation
+// attribution.
+static unsigned	mcp_sim_frame;
+
+// Receipt ring (Task 9), bounded so the module never grows. A repeated
+// (lease, action_id, epoch) with the same argument hash returns its
+// recorded receipt; a different hash is refused. With 64 slots, a client
+// that echoes action ids across a long session can still outrun it: the
+// miss then surfaces as RESULT_EXPIRED via the sequence high-water.
+#define MCP_LEDGER_SIZE 64
+typedef struct
+{
+	char		lease[64];
+	char		action_id[128];
+	int		epoch;
+	unsigned	hash;
+	char		result[MCP_REPLY_MAX];
+} mcp_ledger_t;
+
+static mcp_ledger_t mcp_ledger[MCP_LEDGER_SIZE];
+static int	mcp_ledger_next;
 
 // World generation (Task 6): bumped from MCP_Poll by watching for a
 // spawn (map name change or sv.time reset), no extra engine hooks.
@@ -673,6 +706,24 @@ static void MCP_FinishAct (qboolean interrupted)
 		"\"completed_ticks\":%d,\"elapsed_ms\":%d,\"interrupted\":%s,"
 		"\"action_id\":\"%s\"",
 		mcp_act_completed, elapsed, interrupted ? "true" : "false", aid);
+
+	// record the receipt before replying: a caller that retries after a
+	// dropped connection gets this result instead of a second execution
+	if (mcp_act_aid[0])
+	{
+		mcp_ledger_t *e = &mcp_ledger[mcp_ledger_next];
+
+		mcp_ledger_next = (mcp_ledger_next + 1) % MCP_LEDGER_SIZE;
+		strncpy (e->lease, mcp_act_lease, sizeof (e->lease) - 1);
+		e->lease[sizeof (e->lease) - 1] = 0;
+		strncpy (e->action_id, mcp_act_aid, sizeof (e->action_id) - 1);
+		e->action_id[sizeof (e->action_id) - 1] = 0;
+		e->epoch = mcp_act_epoch;
+		e->hash = mcp_act_hash;
+		strncpy (e->result, result, sizeof (e->result) - 1);
+		e->result[sizeof (e->result) - 1] = 0;
+	}
+
 	MCP_Reply (mcp_act_id, true, NULL, result);
 	MCP_EndInput ();
 	mcp_act_active = 0;
@@ -699,14 +750,45 @@ static void MCP_ClearControl (void)
 ==================
 MCP_NoteTick
 
-Called by MCP_Move once per merged simulation tick. Counts completed
-ticks toward the running action's budget.
+Called by the host loop once per completed simulation step (local
+server frame, or the remote send). Advances the simulation frame id and
+counts completed ticks toward the running action's budget; frozen steps
+never reach it.
 ==================
 */
 void MCP_NoteTick (void)
 {
+	mcp_sim_frame++;
 	if (mcp_act_active)
 		mcp_act_completed++;
+}
+
+/*
+==================
+MCP_HashAct
+
+FNV-1a over the canonical argument values of an act request (never the
+wire id, sequence or lease, which vary between a call and its retry).
+==================
+*/
+static unsigned MCP_HashAct (float fwd, float strafe, float vert, float yaw,
+	float pitch, int run, int attack, int jump, int impulse,
+	int has_ticks, int ticks, int dur)
+{
+	unsigned h = 2166136261u;
+	char buf[256];
+	char *p;
+
+	snprintf (buf, sizeof (buf),
+		"%.3f|%.3f|%.3f|%.3f|%.3f|%d|%d|%d|%d|%d|%d|%d",
+		fwd, strafe, vert, yaw, pitch, run, attack, jump, impulse,
+		has_ticks, ticks, dur);
+	for (p = buf; *p; p++)
+	{
+		h ^= (unsigned char)*p;
+		h *= 16777619u;
+	}
+	return h;
 }
 
 /*
@@ -921,6 +1003,30 @@ static void MCP_HandleLine (char *line)
 			MCP_Reply (id, true, NULL, "\"released\":true");
 			return;
 		}
+		if (!strcmp (sub, "mode"))
+		{
+			char mode[32];
+
+			if (!MCP_Field (line, "mode", mode, sizeof (mode)))
+			{
+				MCP_Reply (id, false, "INVALID_CONTEXT",
+					"mode needs a value");
+				return;
+			}
+			if (!strcmp (mode, "stepped"))
+				mcp_step_mode = 1;
+			else if (!strcmp (mode, "realtime"))
+				mcp_step_mode = 0;
+			else
+			{
+				MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY", mode);
+				return;
+			}
+			snprintf (result, sizeof (result), "\"mode\":\"%s\"",
+				mcp_step_mode ? "stepped" : "realtime");
+			MCP_Reply (id, true, NULL, result);
+			return;
+		}
 		MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY", sub);
 		return;
 	}
@@ -975,52 +1081,31 @@ static void MCP_HandleLine (char *line)
 	if (!strcmp (op, "act"))
 	{
 		char leas[64], aida[128], seqs[32], epocs[32];
-		char tickss[32], durs[32];
+		char tickss[32], durs[32], worlds[32], ctrls[32];
 		char jumps[16];
 		int epoch, seq, ticks, dur;
 		int has_ticks, has_dur, jump, impulse, run, attack;
+		unsigned hash;
+		int i;
 		float fwd, strafe, vert, yaw, pitch;
 
-		if (!mcp_lease_active || mcp_lease_id[0] == 0)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "no lease");
-			return;
-		}
-		if (!MCP_Field (line, "lease", leas, sizeof (leas))
-			|| strcmp (leas, mcp_lease_id) != 0)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "lease mismatch");
-			return;
-		}
+		// parse every argument before deciding anything: duplicate
+		// detection needs the full argument hash, and it runs before
+		// the state preconditions so a legitimate retry still gets the
+		// receipt after its lease or world moved on
+		MCP_Field (line, "lease", leas, sizeof (leas));
 		if (!MCP_Field (line, "epoch", epocs, sizeof (epocs)))
 		{
 			MCP_Reply (id, false, "INVALID_CONTEXT", "act needs epoch");
 			return;
 		}
 		epoch = atoi (epocs);
-		if (epoch != mcp_epoch)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "epoch mismatch");
-			return;
-		}
 		if (!MCP_Field (line, "seq", seqs, sizeof (seqs)))
 		{
 			MCP_Reply (id, false, "INVALID_CONTEXT", "act needs seq");
 			return;
 		}
 		seq = atoi (seqs);
-		if (seq <= mcp_lease_seq)
-		{
-			MCP_Reply (id, false, "STALE_STATE", "stale seq");
-			return;
-		}
-		if (mcp_act_active)
-		{
-			MCP_Reply (id, false, "CONTROL_BUSY",
-				"action already running");
-			return;
-		}
-
 		has_ticks = MCP_Field (line, "ticks", tickss, sizeof (tickss)) > 0;
 		has_dur = MCP_Field (line, "duration_ms", durs,
 			sizeof (durs)) > 0;
@@ -1030,6 +1115,8 @@ static void MCP_HandleLine (char *line)
 				"exactly one of ticks / duration_ms");
 			return;
 		}
+		ticks = has_ticks ? atoi (tickss) : 0;
+		dur = has_dur ? atoi (durs) : 0;
 
 		fwd = MCP_FieldFloat (line, "forward");
 		strafe = MCP_FieldFloat (line, "strafe");
@@ -1050,9 +1137,80 @@ static void MCP_HandleLine (char *line)
 		if (!MCP_Field (line, "action_id", aida, sizeof (aida)))
 			aida[0] = 0;
 
+		hash = MCP_HashAct (fwd, strafe, vert, yaw, pitch, run, attack,
+			jump, impulse, has_ticks, ticks, dur);
+
+		// known duplicate: the same lease + action_id + arguments
+		// returns its recorded receipt; different arguments under the
+		// same id are a conflict, never a second execution. Acts with
+		// no action_id carry no identity and are never deduplicated.
+		if (aida[0])
+		{
+			for (i = 0; i < MCP_LEDGER_SIZE; i++)
+			{
+				mcp_ledger_t *e = &mcp_ledger[i];
+
+				if (e->action_id[0] == 0 || e->epoch != epoch
+					|| strcmp (e->action_id, aida) != 0
+					|| strcmp (e->lease, leas) != 0)
+					continue;
+				if (e->hash == hash)
+				{
+					MCP_Reply (id, true, NULL, e->result);
+					return;
+				}
+				MCP_Reply (id, false, "POLICY_DENIED",
+					"action_id reused with different arguments");
+				return;
+			}
+		}
+
+		if (!mcp_lease_active || mcp_lease_id[0] == 0)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "no lease");
+			return;
+		}
+		if (strcmp (leas, mcp_lease_id) != 0)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "lease mismatch");
+			return;
+		}
+		if (epoch != mcp_epoch)
+		{
+			MCP_Reply (id, false, "STALE_STATE", "epoch mismatch");
+			return;
+		}
+		if (MCP_Field (line, "world_generation", worlds, sizeof (worlds))
+			&& atoi (worlds) != mcp_world_gen)
+		{
+			MCP_Reply (id, false, "STALE_STATE",
+				"world generation mismatch");
+			return;
+		}
+		if (MCP_Field (line, "control_revision", ctrls, sizeof (ctrls))
+			&& atoi (ctrls) != mcp_control_rev)
+		{
+			MCP_Reply (id, false, "STALE_STATE",
+				"control revision mismatch");
+			return;
+		}
+		if (mcp_act_active)
+		{
+			MCP_Reply (id, false, "CONTROL_BUSY",
+				"action already running");
+			return;
+		}
+		if (seq <= mcp_lease_seq)
+		{
+			// the sequence is spent and no receipt survived in the
+			// ring: the original result can no longer be returned
+			MCP_Reply (id, false, "RESULT_EXPIRED",
+				"sequence already consumed");
+			return;
+		}
+
 		if (has_ticks)
 		{
-			ticks = atoi (tickss);
 			if (ticks < 1 || ticks > 72)
 			{
 				MCP_Reply (id, false, "INVALID_CONTEXT",
@@ -1064,7 +1222,14 @@ static void MCP_HandleLine (char *line)
 		}
 		else
 		{
-			dur = atoi (durs);
+			// stepped mode counts fixed simulation steps; a wall-clock
+			// budget would silently degrade into real-time stepping
+			if (mcp_step_mode)
+			{
+				MCP_Reply (id, false, "UNSUPPORTED_CAPABILITY",
+					"duration_ms in stepped mode; use ticks");
+				return;
+			}
 			if (dur < 1 || dur > 1000)
 			{
 				MCP_Reply (id, false, "INVALID_CONTEXT",
@@ -1080,6 +1245,10 @@ static void MCP_HandleLine (char *line)
 		strcpy (mcp_act_id, id);
 		strncpy (mcp_act_aid, aida, sizeof (mcp_act_aid) - 1);
 		mcp_act_aid[sizeof (mcp_act_aid) - 1] = 0;
+		strncpy (mcp_act_lease, leas, sizeof (mcp_act_lease) - 1);
+		mcp_act_lease[sizeof (mcp_act_lease) - 1] = 0;
+		mcp_act_hash = hash;
+		mcp_act_epoch = epoch;
 		mcp_act_start = Sys_DoubleTime ();
 		mcp_act_completed = 0;
 		mcp_lease_seq = seq;
@@ -1278,9 +1447,26 @@ void MCP_Shutdown (void)
 /*
 ==================
 MCP_FrameId
+
+Simulation frame id: see mcp_sim_frame. A frozen stepped session keeps
+returning the same id; each merged tick advances it by one.
 ==================
 */
 unsigned MCP_FrameId (void)
 {
-	return (unsigned)host_framecount;
+	return mcp_sim_frame;
+}
+
+/*
+==================
+MCP_FreezeSim
+
+True while the host loop must skip this frame's client/server
+simulation. Polling, rendering, sound and the watchdog are unaffected,
+so an idle owned session stays observable without consuming game time.
+==================
+*/
+qboolean MCP_FreezeSim (void)
+{
+	return mcp_step_mode && !mcp_act_active;
 }

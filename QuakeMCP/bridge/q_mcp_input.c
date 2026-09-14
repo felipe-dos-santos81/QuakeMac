@@ -94,8 +94,9 @@ MCP_Move
 Merge MCP input into the usercmd. Returns 1 if a tick was merged, else 0.
 Applies the yaw/pitch delta once, then scales -1..1 axes through the
 engine speed cvars (cl_forwardspeed/cl_sidespeed/cl_upspeed). Never touches
-in_attack/in_jump/in_impulse. Calls MCP_NoteTick on each merged tick so the
-dispatch layer counts completed simulation steps.
+in_attack/in_jump/in_impulse. The host loop counts completed simulation
+steps via MCP_NoteTick, so they are counted whether or not this frame
+merged input.
 ==================
 */
 int MCP_Move (usercmd_t *cmd)
@@ -126,8 +127,6 @@ int MCP_Move (usercmd_t *cmd)
 		cmd->sidemove *= cl_movespeedkey.value;
 		cmd->upmove *= cl_movespeedkey.value;
 	}
-
-	MCP_NoteTick ();
 
 	return 1;
 }

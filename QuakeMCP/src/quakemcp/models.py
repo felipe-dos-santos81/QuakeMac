@@ -3,6 +3,7 @@
 Pure validation only — no engine I/O, no sockets. The C bridge mirrors
 the wire semantics; this module is what the Python server enforces.
 """
+from collections import deque
 from dataclasses import dataclass, field
 from typing import NotRequired, TypedDict
 
@@ -187,6 +188,60 @@ class Observation:
         missing = [k for k in REQUIRED_STATE_KEYS if k not in self.state]
         if missing:
             raise ValueError("state missing keys: %s" % (missing,))
+
+
+@dataclass(frozen=True)
+class LedgerEntry:
+    lease: str
+    action_id: str
+    epoch: int
+    payload_hash: int
+    receipt: str
+
+
+class Ledger:
+    """Reference model of the bridge's receipt ring (Task 9).
+
+    The engine's C copy is authoritative; this model pins the semantics
+    the contract tests exercise. A repeated (lease, action_id, epoch) with
+    the same argument hash returns its recorded receipt; the same id with
+    different arguments is a conflict, never a second execution. Acts
+    without an action_id carry no identity and are never deduplicated.
+    Lookup never consults the sequence or lease liveness, so a retry still
+    finds its receipt after the lease or world moved on. Once a consumed
+    sequence falls out of the ring, the original result can no longer be
+    returned: the call is expired, not re-executed.
+    """
+
+    CAPACITY = 64
+
+    def __init__(self, capacity=CAPACITY):
+        self.capacity = capacity
+        self._entries = deque(maxlen=capacity)
+        self.seq = 0
+
+    def check(self, lease, epoch, action_id, payload_hash):
+        """-> ("duplicate", receipt) | ("conflict", None) | ("new", None)."""
+        if not action_id:
+            return ("new", None)
+        for e in self._entries:
+            if (e.lease, e.action_id, e.epoch) == (lease, action_id, epoch):
+                if e.payload_hash == payload_hash:
+                    return ("duplicate", e.receipt)
+                return ("conflict", None)
+        return ("new", None)
+
+    def record(self, lease, epoch, action_id, payload_hash, receipt):
+        if not action_id:
+            return
+        self._entries.append(
+            LedgerEntry(lease, action_id, epoch, payload_hash, receipt))
+
+    def expired(self, seq):
+        return seq <= self.seq
+
+    def consume(self, seq):
+        self.seq = max(self.seq, seq)
 
 
 def validate_line(obj):
